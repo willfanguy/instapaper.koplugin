@@ -1,0 +1,140 @@
+# Instapaper Plugin for KOReader
+
+Download and read articles from your Instapaper account directly in KOReader.
+
+## Features
+
+- **OAuth 1.0a authentication** using Instapaper's official Full API
+- Browse **Unread**, **Starred**, and **Archived** articles
+- **Download and read** articles as HTML in KOReader's built-in reader
+- **Manage articles**: Archive, Delete, Star (via long-press)
+- **Reading progress** display (percentage read)
+- **Persistent credentials** — stay logged in across sessions
+
+## Installation
+
+1. Copy the `instapaper.koplugin` folder to your KOReader plugins directory:
+   - For most devices: `koreader/plugins/instapaper.koplugin/`
+   
+2. Restart KOReader
+
+## Setup
+
+### 1. Get OAuth Consumer Credentials
+
+Before you can use this plugin, you need to request OAuth consumer credentials from Instapaper:
+
+1. Visit: https://www.instapaper.com/main/request_oauth_consumer_token
+2. Fill out the form with your application details
+3. Wait for approval (usually within a few days)
+4. You'll receive a **Consumer Key** and **Consumer Secret**
+
+### 2. Configure the Plugin
+
+#### Option A: Via KOReader Menu (Recommended)
+
+1. Open KOReader and go to the main menu (tap the top of the screen)
+2. Navigate to **Tools** → (2nd or 3rd page) → **Instapaper**
+3. Select **API credentials**
+4. Enter your **Consumer Key** and **Consumer Secret**
+5. Tap **Save**
+
+#### Option B: Manual Configuration File
+
+Alternatively, you can create a configuration file manually:
+
+1. Create a file named `instapaper.lua` with the following content:
+   ```lua
+   -- instapaper.lua
+   return {
+       ["consumer_key"] = "your_consumer_key_here",
+       ["consumer_secret"] = "your_consumer_secret_here",
+   }
+   ```
+
+2. Copy this file to your KOReader settings directory:
+   - **Kobo/Kindle/Android**: `koreader/settings/instapaper.lua`
+   - **Desktop/Emulator**: `~/.config/koreader/settings/instapaper.lua` (Linux/macOS) or `%APPDATA%\koreader\settings\instapaper.lua` (Windows)
+
+3. Restart KOReader
+
+### 3. Log In
+
+1. In the Instapaper menu, select **Log in**
+2. Enter your Instapaper **email or username**
+3. Enter your **password** (leave blank if you don't have one)
+4. Tap **Login**
+
+Once logged in, your OAuth tokens are saved and you won't need to log in again unless you explicitly log out.
+
+## Usage
+
+### Browse Articles
+
+From the Instapaper menu, choose:
+- **Unread articles** — Your reading list
+- **Starred articles** — Articles you've starred
+- **Archived articles** — Completed articles
+
+### Read an Article
+
+- **Tap** an article to download and open it in KOReader's reader
+- Articles are saved to `koreader/instapaper/` as HTML files
+
+### Manage Articles
+
+- **Long-press** an article to show actions:
+  - **Archive** — Move to archive
+  - **Star** — Add to starred
+  - **Delete** — Permanently delete from Instapaper
+
+## Implementation Details
+
+This plugin uses the **Instapaper Full API** (OAuth 1.0a):
+
+### Authentication
+- **xAuth login**: `/api/1/oauth/access_token` with username/password → OAuth tokens
+- **HMAC-SHA1 signing**: All API requests are signed using `openssl.hmac`
+- **Persistent storage**: OAuth tokens saved in `settings/instapaper.lua`
+
+### API Endpoints
+- **`/api/1/bookmarks/list`** — Fetch articles (with folder filtering)
+- **`/api/1/bookmarks/get_text`** — Download article HTML
+- **`/api/1/bookmarks/archive`** — Archive an article
+- **`/api/1/bookmarks/delete`** — Delete an article
+- **`/api/1/bookmarks/star`** — Star an article
+
+### OAuth 1.0a Signature
+The plugin implements RFC 5849 OAuth 1.0a signature generation:
+1. Percent-encode all parameters (RFC 3986)
+2. Build signature base string (method + URL + sorted params)
+3. Sign with HMAC-SHA1 using consumer secret + token secret
+4. Base64-encode and add to Authorization header
+
+## API Documentation
+
+- Simple API: https://www.instapaper.com/api/simple
+- Full API: https://www.instapaper.com/api/full
+
+## Troubleshooting
+
+### "Please set API credentials first"
+You need to obtain OAuth consumer credentials from Instapaper first. See **Setup** section above.
+
+### "Login failed"
+- Check your username/email and password
+- Verify your consumer key and secret are correct
+- Ensure you have network connectivity
+
+### Articles won't download
+- Check network connection
+- Verify you're still logged in (tokens may have expired)
+- Try logging out and back in
+
+## Development
+
+This plugin was developed with assistance from [Windsurf](https://codeium.com/windsurf), an AI-powered code editor.
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 (GPL-3.0). See the [LICENSE](LICENSE) file for details.
