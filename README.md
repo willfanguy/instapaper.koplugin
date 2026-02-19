@@ -5,10 +5,16 @@ Download and read articles from your Instapaper account directly in KOReader.
 ## Features
 
 - **OAuth 1.0a authentication** using Instapaper's official Full API
-- Browse **Unread**, **Starred**, and **Archived** articles
+- Browse **Unread**, **Starred**, **Archived**, and **custom folders**
 - **Download and read** articles as HTML in KOReader's built-in reader
+- **Download only** (long-press → Download) without leaving the list — enables multi-article downloads
+- **Article info on long-press**: date saved, word count, estimated reading time, progress, and source URL
 - **Manage articles**: Archive, Delete, Star (via long-press)
+- **Bulk download** with folder, time period, and post-download action (archive/delete/none)
+- **Auto WiFi connect** — triggers network connection automatically when needed
+- **Title injection** — missing article titles are added as a heading in the downloaded HTML
 - **Reading progress** display (percentage read)
+- **Open downloads folder** shortcut in the menu
 - **Persistent credentials** — stay logged in across sessions
 
 ## Installation
@@ -75,18 +81,36 @@ From the Instapaper menu, choose:
 - **Unread articles** — Your reading list
 - **Starred articles** — Articles you've starred
 - **Archived articles** — Completed articles
+- **Custom folders** — Lists your user-created Instapaper folders; tap one to browse its articles
 
 ### Read an Article
 
 - **Tap** an article to download and open it in KOReader's reader
 - Articles are saved to `koreader/instapaper/` as HTML files
+- If the article has no heading, its Instapaper title is automatically added at the top
 
-### Manage Articles
+### Long-press an Article
 
-- **Long-press** an article to show actions:
-  - **Archive** — Move to archive
-  - **Star** — Add to starred
-  - **Delete** — Permanently delete from Instapaper
+Long-pressing an article shows its metadata (date saved, word count, reading time, progress, URL) and the following actions:
+
+- **Download** — Save the article locally without opening it or closing the list (useful for downloading multiple articles one by one)
+- **Open** — Download and open the article immediately
+- **Archive** — Move to archive
+- **Star** — Add to starred
+- **Delete** — Permanently delete from Instapaper
+
+### Bulk Download
+
+Select **Bulk download...** from the menu to download multiple articles at once:
+
+- **Folder** — Choose which folder to download from (Unread, Starred, Archive, or any custom folder)
+- **Period** — Limit to articles saved within the last N days (0 = all)
+- **Archive after** — Automatically archive each article after downloading
+- **Delete after** — Automatically delete each article after downloading (mutually exclusive with Archive)
+
+### Open Downloads Folder
+
+Select **Open downloads folder** to open the local `koreader/instapaper/` directory in KOReader's file manager.
 
 ## Implementation Details
 
@@ -103,6 +127,7 @@ This plugin uses the **Instapaper Full API** (OAuth 1.0a):
 - **`/api/1/bookmarks/archive`** — Archive an article
 - **`/api/1/bookmarks/delete`** — Delete an article
 - **`/api/1/bookmarks/star`** — Star an article
+- **`/api/1/folders/list`** — Fetch user-created folders
 
 ### OAuth 1.0a Signature
 The plugin implements RFC 5849 OAuth 1.0a signature generation:

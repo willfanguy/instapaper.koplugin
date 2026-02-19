@@ -7,6 +7,7 @@ local LuaSettings = require("luasettings")
 local Menu = require("ui/widget/menu")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local NetworkMgr = require("ui/network/manager")
+local SpinWidget = require("ui/widget/spinwidget")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local https = require("ssl.https")
@@ -240,6 +241,29 @@ function Instapaper:addToMainMenu(menu_items)
                 separator = true,
             },
             {
+                text = _("Custom folders"),
+                callback = function()
+                    self:ensureOnlineAndLoggedIn(function()
+                        self:fetchAndShowUserFolders()
+                    end)
+                end,
+            },
+            {
+                text = _("Bulk download..."),
+                callback = function()
+                    self:ensureOnlineAndLoggedIn(function()
+                        self:showBulkDownloadDialog()
+                    end)
+                end,
+            },
+            {
+                text = _("Open downloads folder"),
+                callback = function()
+                    self:openDownloadsFolder()
+                end,
+                separator = true,
+            },
+            {
                 text = _("API credentials"),
                 keep_menu_open = true,
                 callback = function()
@@ -269,11 +293,9 @@ function Instapaper:addToMainMenu(menu_items)
                             })
                             return
                         end
-                        if not NetworkMgr:isOnline() then
-                            NetworkMgr:promptWifiOn()
-                            return
-                        end
-                        self:showLoginDialog()
+                        NetworkMgr:runWhenOnline(function()
+                            self:showLoginDialog()
+                        end)
                     end
                 end,
             },
@@ -282,17 +304,15 @@ function Instapaper:addToMainMenu(menu_items)
 end
 
 function Instapaper:ensureOnlineAndLoggedIn(callback)
-    if not NetworkMgr:isOnline() then
-        NetworkMgr:promptWifiOn()
-        return
-    end
     if not self:isLoggedIn() then
         UIManager:show(InfoMessage:new{
             text = _("Please configure API credentials and log in first."),
         })
         return
     end
-    callback()
+    NetworkMgr:runWhenOnline(function()
+        callback()
+    end)
 end
 
 --------------------------------------------------------------------
@@ -450,7 +470,7 @@ end
 -- Bookmarks
 --------------------------------------------------------------------
 
-function Instapaper:fetchAndShowArticles(folder_id)
+function Instapaper:fetchAndShowArticles(folder_id, folder_name)
     UIManager:show(InfoMessage:new{
         text = _("Fetching articles..."),
         timeout = 1,
@@ -487,7 +507,7 @@ function Instapaper:fetchAndShowArticles(folder_id)
             end
         end
     end
-    
+
     if #bookmarks == 0 then
         UIManager:show(InfoMessage:new{
             text = _("No articles found."),
@@ -495,10 +515,10 @@ function Instapaper:fetchAndShowArticles(folder_id)
         return
     end
 
-    self:showArticleMenu(bookmarks, folder_id)
+    self:showArticleMenu(bookmarks, folder_id, folder_name)
 end
 
-function Instapaper:showArticleMenu(bookmarks, folder_id)
+function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
     local folder_names = {
         unread  = _("Unread"),
         starred = _("Starred"),
@@ -512,32 +532,34 @@ function Instapaper:showArticleMenu(bookmarks, folder_id)
         if not title or title == "" or type(title) ~= "string" then
             title = "Untitled"
         end
-        
+
         local progress_str = nil
         if bm.progress and bm.progress > 0 then
             progress_str = string.format("%d%%", bm.progress * 100)
         end
-        
+
         local item = {
             text = title,
             _bookmark = bm,
             callback = function()
-                self:downloadAndOpenArticle(bm)
+                NetworkMgr:runWhenOnline(function()
+                    self:downloadAndOpenArticle(bm)
+                end)
             end,
             hold_callback = function()
                 self:showArticleActions(bm, menu, folder_id)
             end,
             hold_keep_menu_open = true,
         }
-        
+
         if progress_str then
             item.mandatory = progress_str
         end
-        
+
         table.insert(menu_items, item)
     end
 
-    local menu_title = folder_names[folder_id] or folder_id or "Articles"
+    local menu_title = folder_name or folder_names[folder_id] or folder_id or "Articles"
     if type(menu_title) ~= "string" then
         menu_title = "Articles"
     end
@@ -562,16 +584,72 @@ function Instapaper:showArticleMenu(bookmarks, folder_id)
     UIManager:show(menu, "full")
 end
 
-function Instapaper:showArticleActions(bookmark, parent_menu, folder_id)
+function Instapaper:buildArticleMetaTitle(bookmark)
     local title = bookmark.title
     if not title or title == "" then
         title = _("Untitled")
     end
-    
+
+    local lines = { title }
+
+    -- Date
+    if bookmark.time and bookmark.time > 0 then
+        local date_str = os.date("%Y-%m-%d", bookmark.time)
+        lines[#lines + 1] = _("Date: ") .. date_str
+    end
+
+    -- Word count / reading time
+    if bookmark.word_count and bookmark.word_count > 0 then
+        local wc = tostring(bookmark.word_count) .. " " .. _("words")
+        local mins = math.ceil(bookmark.word_count / 200)
+        wc = wc .. "  (~" .. tostring(mins) .. " min)"
+        lines[#lines + 1] = wc
+    end
+
+    -- Reading progress
+    if bookmark.progress and bookmark.progress > 0 then
+        lines[#lines + 1] = _("Progress: ") .. string.format("%d%%", bookmark.progress * 100)
+    end
+
+    -- URL (truncated)
+    if bookmark.url and bookmark.url ~= "" then
+        local url = bookmark.url
+        if #url > 60 then
+            url = url:sub(1, 57) .. "..."
+        end
+        lines[#lines + 1] = url
+    end
+
+    return table.concat(lines, "\n")
+end
+
+function Instapaper:showArticleActions(bookmark, parent_menu, folder_id)
+    local dialog_title = self:buildArticleMetaTitle(bookmark)
+
     local actions_dialog
     actions_dialog = ButtonDialog:new{
-        title = title,
+        title = dialog_title,
         buttons = {
+            {
+                {
+                    text = _("Download"),
+                    callback = function()
+                        UIManager:close(actions_dialog)
+                        NetworkMgr:runWhenOnline(function()
+                            self:downloadArticleOnly(bookmark)
+                        end)
+                    end,
+                },
+                {
+                    text = _("Open"),
+                    callback = function()
+                        UIManager:close(actions_dialog)
+                        NetworkMgr:runWhenOnline(function()
+                            self:downloadAndOpenArticle(bookmark)
+                        end)
+                    end,
+                },
+            },
             {
                 {
                     text = _("Archive"),
@@ -610,47 +688,419 @@ function Instapaper:showArticleActions(bookmark, parent_menu, folder_id)
     UIManager:show(actions_dialog)
 end
 
+function Instapaper:getDownloadDir()
+    local dir = DataStorage:getDataDir() .. "/instapaper"
+    lfs.mkdir(dir)
+    return dir
+end
+
+function Instapaper:buildFilepath(bookmark)
+    local safe_title = (bookmark.title or "article")
+        :gsub("[/\\%?%%%*%:%|%\"%<%>]", "_")
+        :sub(1, 100)
+    return self:getDownloadDir() .. "/"
+        .. tostring(bookmark.bookmark_id) .. "_" .. safe_title .. ".html"
+end
+
+function Instapaper:injectTitleIfMissing(html, bookmark)
+    local title = bookmark.title
+    if not title or title == "" then
+        return html
+    end
+    -- Only inject if no h1/h2/h3 found near the top of the document
+    local head = html:sub(1, 2000):lower()
+    if head:find("<h1") or head:find("<h2") or head:find("<h3") then
+        return html
+    end
+    local escaped = title:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+    local inject = "<h3>" .. escaped .. "</h3>\n"
+    -- Insert after <body> tag if present, otherwise prepend
+    local result, n = html:gsub("(<body[^>]*>)", "%1\n" .. inject, 1)
+    if n == 0 then
+        result = inject .. html
+    end
+    return result
+end
+
+function Instapaper:fetchArticleHtml(bookmark)
+    local ok, html, code = self:apiRequest("/api/1/bookmarks/get_text", {
+        bookmark_id = tostring(bookmark.bookmark_id),
+    }, true)
+    if not ok then
+        return nil, code
+    end
+    html = self:injectTitleIfMissing(html, bookmark)
+    return html, nil
+end
+
+function Instapaper:saveArticleHtml(bookmark, html)
+    local filepath = self:buildFilepath(bookmark)
+    local f = io.open(filepath, "w")
+    if not f then
+        return nil
+    end
+    f:write(html)
+    f:close()
+    return filepath
+end
+
+-- Download only (no open), keeps caller menu open
+function Instapaper:downloadArticleOnly(bookmark)
+    UIManager:show(InfoMessage:new{
+        text = _("Downloading article..."),
+        timeout = 1,
+    })
+
+    local html, err = self:fetchArticleHtml(bookmark)
+    if not html then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Download failed (HTTP %1)"), tostring(err)),
+        })
+        return
+    end
+
+    local filepath = self:saveArticleHtml(bookmark, html)
+    if not filepath then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not save article file."),
+        })
+        return
+    end
+
+    local short_title = (bookmark.title or "article"):sub(1, 40)
+    UIManager:show(InfoMessage:new{
+        text = T(_("Saved: %1"), short_title),
+        timeout = 2,
+    })
+end
+
 function Instapaper:downloadAndOpenArticle(bookmark)
     UIManager:show(InfoMessage:new{
         text = _("Downloading article..."),
         timeout = 1,
     })
 
-    -- get_text returns HTML, not JSON
-    local ok, html, code = self:apiRequest("/api/1/bookmarks/get_text", {
-        bookmark_id = tostring(bookmark.bookmark_id),
-    }, true)
-
-    if not ok then
+    local html, err = self:fetchArticleHtml(bookmark)
+    if not html then
         UIManager:show(InfoMessage:new{
-            text = T(_("Download failed (HTTP %1)"), tostring(code)),
+            text = T(_("Download failed (HTTP %1)"), tostring(err)),
         })
         return
     end
 
-    -- Save as HTML file
-    local download_dir = DataStorage:getDataDir() .. "/instapaper"
-    lfs.mkdir(download_dir)
-
-    local safe_title = (bookmark.title or "article")
-        :gsub("[/\\%?%%%*%:%|%\"%<%>]", "_")
-        :sub(1, 100)
-    local filepath = download_dir .. "/"
-        .. tostring(bookmark.bookmark_id) .. "_" .. safe_title .. ".html"
-
-    local f = io.open(filepath, "w")
-    if not f then
+    local filepath = self:saveArticleHtml(bookmark, html)
+    if not filepath then
         UIManager:show(InfoMessage:new{
             text = _("Could not save article file."),
         })
         return
     end
-    f:write(html)
-    f:close()
 
     -- Open in KOReader
     local ReaderUI = require("apps/reader/readerui")
     ReaderUI:showReader(filepath)
+end
+
+--------------------------------------------------------------------
+-- Downloads folder
+--------------------------------------------------------------------
+
+function Instapaper:openDownloadsFolder()
+    local dir = self:getDownloadDir()
+    local FileManager = require("apps/filemanager/filemanager")
+    if FileManager.instance then
+        FileManager.instance:reinit(dir)
+    else
+        FileManager:showFiles(dir)
+    end
+end
+
+--------------------------------------------------------------------
+-- Custom folders
+--------------------------------------------------------------------
+
+-- Returns a list of {text, value} for user-created folders, or nil on error.
+function Instapaper:fetchUserFolders()
+    local ok, body, code = self:apiRequest("/api/1/folders/list", {})
+    if not ok then
+        logger.warn("Instapaper: failed to fetch folders", code)
+        return nil
+    end
+    local parse_ok, data = pcall(JSON.decode, body)
+    if not parse_ok or type(data) ~= "table" then
+        return nil
+    end
+    local folders = {}
+    for _, item in ipairs(data) do
+        if type(item) == "table" and item.type == "folder" then
+            table.insert(folders, {
+                text  = item.title or item.slug or tostring(item.folder_id),
+                value = tostring(item.folder_id),
+            })
+        end
+    end
+    return folders
+end
+
+function Instapaper:fetchAndShowUserFolders()
+    UIManager:show(InfoMessage:new{
+        text = _("Fetching folders..."),
+        timeout = 1,
+    })
+
+    local folders = self:fetchUserFolders()
+    if not folders then
+        UIManager:show(InfoMessage:new{
+            text = _("Failed to fetch folders."),
+        })
+        return
+    end
+    if #folders == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("No custom folders found."),
+        })
+        return
+    end
+
+    local folder_menu
+    local menu_items = {}
+    for _, folder in ipairs(folders) do
+        local f = folder
+        table.insert(menu_items, {
+            text = f.text,
+            callback = function()
+                UIManager:close(folder_menu)
+                NetworkMgr:runWhenOnline(function()
+                    self:fetchAndShowArticles(f.value, f.text)
+                end)
+            end,
+        })
+    end
+
+    folder_menu = Menu:new{
+        title = _("Instapaper - Custom folders"),
+        item_table = menu_items,
+        is_borderless = true,
+        is_popout = false,
+        title_bar_fm_style = true,
+        close_callback = function()
+            UIManager:close(folder_menu)
+        end,
+    }
+    UIManager:show(folder_menu, "full")
+end
+
+--------------------------------------------------------------------
+-- Bulk download
+--------------------------------------------------------------------
+
+function Instapaper:showBulkDownloadDialog()
+    -- Start with built-in folders; custom folders appended after fetch
+    local folder_choices = {
+        { text = _("Unread"),  value = "unread"  },
+        { text = _("Starred"), value = "starred" },
+        { text = _("Archive"), value = "archive" },
+    }
+
+    -- Fetch user folders and append
+    local user_folders = self:fetchUserFolders()
+    if user_folders then
+        for _, f in ipairs(user_folders) do
+            table.insert(folder_choices, f)
+        end
+    end
+
+    -- State for the dialog
+    local selected_folder_idx = 1
+    local days_limit = 0   -- 0 = no limit
+    local archive_after = self.settings:readSetting("bulk_archive_after") or false
+    local delete_after  = self.settings:readSetting("bulk_delete_after")  or false
+
+    local function folderLabel()
+        return folder_choices[selected_folder_idx].text
+    end
+
+    local function daysLabel()
+        if days_limit == 0 then
+            return _("All time")
+        else
+            return T(_("Last %1 days"), tostring(days_limit))
+        end
+    end
+
+    local bulk_dialog
+    local function rebuildDialog()
+        if bulk_dialog then
+            UIManager:close(bulk_dialog)
+        end
+        bulk_dialog = ButtonDialog:new{
+            title = _("Bulk download settings")
+                .. "\n" .. _("Folder: ") .. folderLabel()
+                .. "\n" .. _("Period: ") .. daysLabel()
+                .. "\n" .. _("Archive after download: ") .. (archive_after and _("Yes") or _("No"))
+                .. "\n" .. _("Delete after download: ")  .. (delete_after  and _("Yes") or _("No")),
+            buttons = {
+                {
+                    {
+                        text = _("< Folder >"),
+                        callback = function()
+                            selected_folder_idx = (selected_folder_idx % #folder_choices) + 1
+                            rebuildDialog()
+                        end,
+                    },
+                    {
+                        text = _("< Period >"),
+                        callback = function()
+                            UIManager:close(bulk_dialog)
+                            local spin = SpinWidget:new{
+                                title_text = _("Days limit (0 = all)"),
+                                value = days_limit,
+                                value_min = 0,
+                                value_max = 365,
+                                value_step = 1,
+                                ok_text = _("Set"),
+                                callback = function(spin_widget)
+                                    days_limit = spin_widget.value
+                                    rebuildDialog()
+                                end,
+                                cancel_callback = function()
+                                    rebuildDialog()
+                                end,
+                            }
+                            UIManager:show(spin)
+                        end,
+                    },
+                },
+                {
+                    {
+                        text = _("Archive after: ") .. (archive_after and _("ON") or _("OFF")),
+                        callback = function()
+                            archive_after = not archive_after
+                            if archive_after then delete_after = false end
+                            rebuildDialog()
+                        end,
+                    },
+                    {
+                        text = _("Delete after: ") .. (delete_after and _("ON") or _("OFF")),
+                        callback = function()
+                            delete_after = not delete_after
+                            if delete_after then archive_after = false end
+                            rebuildDialog()
+                        end,
+                    },
+                },
+                {
+                    {
+                        text = _("Start download"),
+                        callback = function()
+                            UIManager:close(bulk_dialog)
+                            -- Save preferences
+                            self.settings:saveSetting("bulk_archive_after", archive_after)
+                            self.settings:saveSetting("bulk_delete_after",  delete_after)
+                            self.settings:flush()
+                            local folder_val = folder_choices[selected_folder_idx].value
+                            self:runBulkDownload(folder_val, days_limit, archive_after, delete_after)
+                        end,
+                    },
+                    {
+                        text = _("Cancel"),
+                        callback = function()
+                            UIManager:close(bulk_dialog)
+                        end,
+                    },
+                },
+            },
+        }
+        UIManager:show(bulk_dialog)
+    end
+
+    rebuildDialog()
+end
+
+function Instapaper:runBulkDownload(folder_id, days_limit, archive_after, delete_after)
+    UIManager:show(InfoMessage:new{
+        text = _("Fetching article list..."),
+        timeout = 1,
+    })
+
+    local params = { limit = "500" }
+    if folder_id then
+        params.folder_id = folder_id
+    end
+
+    local ok, body, code = self:apiRequest("/api/1/bookmarks/list", params)
+    if not ok then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Failed to fetch articles: %1"), body or tostring(code)),
+        })
+        return
+    end
+
+    local parse_ok, data = pcall(JSON.decode, body)
+    if not parse_ok or type(data) ~= "table" then
+        UIManager:show(InfoMessage:new{
+            text = _("Failed to parse article list."),
+        })
+        return
+    end
+
+    local bookmarks = {}
+    for _, item in ipairs(data) do
+        if type(item) == "table" and item.type == "bookmark" then
+            -- Apply days filter (client-side)
+            local include = true
+            if days_limit and days_limit > 0 then
+                local cutoff = os.time() - (days_limit * 86400)
+                if not item.time or item.time < cutoff then
+                    include = false
+                end
+            end
+            if include then
+                table.insert(bookmarks, item)
+            end
+        end
+    end
+
+    if #bookmarks == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("No articles match the selected filters."),
+        })
+        return
+    end
+
+    -- Download sequentially, show progress
+    local downloaded = 0
+    local failed = 0
+    for _, bm in ipairs(bookmarks) do
+        local html, err = self:fetchArticleHtml(bm)
+        if html then
+            local saved = self:saveArticleHtml(bm, html)
+            if saved then
+                downloaded = downloaded + 1
+                -- Archive or delete after successful download
+                if archive_after then
+                    self:apiRequest("/api/1/bookmarks/archive", {
+                        bookmark_id = tostring(bm.bookmark_id),
+                    })
+                elseif delete_after then
+                    self:apiRequest("/api/1/bookmarks/delete", {
+                        bookmark_id = tostring(bm.bookmark_id),
+                    })
+                end
+            else
+                failed = failed + 1
+            end
+        else
+            logger.warn("Instapaper bulk: failed to download", bm.bookmark_id, err)
+            failed = failed + 1
+        end
+    end
+
+    local msg = T(_("Bulk download complete.\nDownloaded: %1  Failed: %2"),
+        tostring(downloaded), tostring(failed))
+    UIManager:show(InfoMessage:new{
+        text = msg,
+    })
 end
 
 --------------------------------------------------------------------
