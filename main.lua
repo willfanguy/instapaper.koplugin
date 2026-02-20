@@ -184,6 +184,9 @@ function Instapaper:loadSettings()
     self.oauth_token        = self.settings:readSetting("oauth_token")
     self.oauth_token_secret = self.settings:readSetting("oauth_token_secret")
     self.username           = self.settings:readSetting("username")
+    self.article_limit      = self.settings:readSetting("article_limit") or 50
+    self.output_format      = self.settings:readSetting("output_format") or "html"
+    self.include_images     = self.settings:readSetting("include_images") or false
 end
 
 function Instapaper:saveSettings()
@@ -192,6 +195,9 @@ function Instapaper:saveSettings()
     self.settings:saveSetting("oauth_token",        self.oauth_token)
     self.settings:saveSetting("oauth_token_secret", self.oauth_token_secret)
     self.settings:saveSetting("username",           self.username)
+    self.settings:saveSetting("article_limit",      self.article_limit)
+    self.settings:saveSetting("output_format",      self.output_format)
+    self.settings:saveSetting("include_images",     self.include_images)
     self.settings:flush()
 end
 
@@ -261,7 +267,21 @@ function Instapaper:addToMainMenu(menu_items)
                 callback = function()
                     self:openDownloadsFolder()
                 end,
+            },
+            {
+                text = _("Clear downloads cache"),
+                keep_menu_open = true,
+                callback = function()
+                    self:clearDownloadsCache()
+                end,
                 separator = true,
+            },
+            {
+                text = _("Settings"),
+                keep_menu_open = true,
+                callback = function()
+                    self:showSettingsDialog()
+                end,
             },
             {
                 text = _("API credentials"),
@@ -364,6 +384,93 @@ function Instapaper:showCredentialsDialog()
     }
     UIManager:show(self.cred_dialog)
     self.cred_dialog:onShowKeyboard()
+end
+
+function Instapaper:showSettingsDialog()
+    local limit_choices = { 10, 25, 50, 100, 200, 500 }
+    local current_limit = self.article_limit or 50
+
+    -- Find current index for limit
+    local limit_idx = 2  -- default to 25
+    for i, v in ipairs(limit_choices) do
+        if v == current_limit then
+            limit_idx = i
+            break
+        end
+    end
+
+    local output_format = self.output_format or "html"
+    local include_images = self.include_images or false
+
+    local settings_dialog
+    local function rebuildSettingsDialog()
+        if settings_dialog then
+            UIManager:close(settings_dialog)
+        end
+
+        local fmt_label = output_format == "epub" and "EPUB" or "HTML"
+        local img_label = include_images and _("ON") or _("OFF")
+        local limit_label = tostring(limit_choices[limit_idx])
+
+        settings_dialog = ButtonDialog:new{
+            title = _("Instapaper settings")
+                .. "\n" .. _("Article list limit: ") .. limit_label
+                .. "\n" .. _("Output format: ") .. fmt_label
+                .. "\n" .. _("Include images (EPUB): ") .. img_label,
+            buttons = {
+                {
+                    {
+                        text = _("< Limit >"),
+                        callback = function()
+                            limit_idx = (limit_idx % #limit_choices) + 1
+                            rebuildSettingsDialog()
+                        end,
+                    },
+                    {
+                        text = _("< Format >"),
+                        callback = function()
+                            output_format = output_format == "html" and "epub" or "html"
+                            rebuildSettingsDialog()
+                        end,
+                    },
+                },
+                {
+                    {
+                        text = _("Images: ") .. img_label,
+                        callback = function()
+                            include_images = not include_images
+                            rebuildSettingsDialog()
+                        end,
+                    },
+                },
+                {
+                    {
+                        text = _("Save"),
+                        callback = function()
+                            UIManager:close(settings_dialog)
+                            self.article_limit  = limit_choices[limit_idx]
+                            self.output_format  = output_format
+                            self.include_images = include_images
+                            self:saveSettings()
+                            UIManager:show(InfoMessage:new{
+                                text = _("Settings saved."),
+                                timeout = 2,
+                            })
+                        end,
+                    },
+                    {
+                        text = _("Cancel"),
+                        callback = function()
+                            UIManager:close(settings_dialog)
+                        end,
+                    },
+                },
+            },
+        }
+        UIManager:show(settings_dialog)
+    end
+
+    rebuildSettingsDialog()
 end
 
 function Instapaper:showLoginDialog()
@@ -476,7 +583,7 @@ function Instapaper:fetchAndShowArticles(folder_id, folder_name)
         timeout = 1,
     })
 
-    local params = { limit = "25" }
+    local params = { limit = tostring(self.article_limit or 50) }
     if folder_id then
         params.folder_id = folder_id
     end
@@ -744,6 +851,24 @@ function Instapaper:saveArticleHtml(bookmark, html)
     return filepath
 end
 
+-- Save article in the configured output format (html or epub).
+-- Returns filepath on success, nil on failure.
+function Instapaper:saveArticle(bookmark, html)
+    local fmt = self.output_format or "html"
+    if fmt == "epub" then
+        local InstapaperEpub = require("instapaper_epub")
+        local filepath, err = InstapaperEpub.createEpub(
+            bookmark, html, self:getDownloadDir(), self.include_images)
+        if not filepath then
+            logger.warn("Instapaper: EPUB creation failed, falling back to HTML", err)
+            return self:saveArticleHtml(bookmark, html)
+        end
+        return filepath
+    else
+        return self:saveArticleHtml(bookmark, html)
+    end
+end
+
 -- Download only (no open), keeps caller menu open
 function Instapaper:downloadArticleOnly(bookmark)
     UIManager:show(InfoMessage:new{
@@ -759,7 +884,7 @@ function Instapaper:downloadArticleOnly(bookmark)
         return
     end
 
-    local filepath = self:saveArticleHtml(bookmark, html)
+    local filepath = self:saveArticle(bookmark, html)
     if not filepath then
         UIManager:show(InfoMessage:new{
             text = _("Could not save article file."),
@@ -788,7 +913,7 @@ function Instapaper:downloadAndOpenArticle(bookmark)
         return
     end
 
-    local filepath = self:saveArticleHtml(bookmark, html)
+    local filepath = self:saveArticle(bookmark, html)
     if not filepath then
         UIManager:show(InfoMessage:new{
             text = _("Could not save article file."),
@@ -804,6 +929,48 @@ end
 --------------------------------------------------------------------
 -- Downloads folder
 --------------------------------------------------------------------
+
+function Instapaper:clearDownloadsCache()
+    local dir = self:getDownloadDir()
+    local ConfirmBox = require("ui/widget/confirmbox")
+
+    UIManager:show(ConfirmBox:new{
+        text = _("Delete all files and folders in the Instapaper downloads folder?"),
+        ok_text = _("Delete"),
+        ok_callback = function()
+            self:_doClearDownloadsCache(dir)
+        end,
+    })
+end
+
+function Instapaper:_doClearDownloadsCache(dir)
+    local function removeAll(path)
+        local attr = lfs.attributes(path)
+        if not attr then return end
+        if attr.mode == "directory" then
+            for entry in lfs.dir(path) do
+                if entry ~= "." and entry ~= ".." then
+                    removeAll(path .. "/" .. entry)
+                end
+            end
+            lfs.rmdir(path)
+        else
+            os.remove(path)
+        end
+    end
+
+    local count = 0
+    for entry in lfs.dir(dir) do
+        if entry ~= "." and entry ~= ".." then
+            removeAll(dir .. "/" .. entry)
+            count = count + 1
+        end
+    end
+    UIManager:show(InfoMessage:new{
+        text = T(_("Deleted %1 item(s) from downloads folder."), count),
+        timeout = 3,
+    })
+end
 
 function Instapaper:openDownloadsFolder()
     local dir = self:getDownloadDir()
@@ -1023,7 +1190,7 @@ function Instapaper:runBulkDownload(folder_id, days_limit, archive_after, delete
         timeout = 1,
     })
 
-    local params = { limit = "500" }
+    local params = { limit = "500" }  -- bulk always fetches max
     if folder_id then
         params.folder_id = folder_id
     end
@@ -1074,7 +1241,7 @@ function Instapaper:runBulkDownload(folder_id, days_limit, archive_after, delete
     for _, bm in ipairs(bookmarks) do
         local html, err = self:fetchArticleHtml(bm)
         if html then
-            local saved = self:saveArticleHtml(bm, html)
+            local saved = self:saveArticle(bm, html)
             if saved then
                 downloaded = downloaded + 1
                 -- Archive or delete after successful download
