@@ -6,7 +6,8 @@ Download and read articles from your Instapaper account directly in KOReader.
 
 - **OAuth 1.0a authentication** using Instapaper's official Full API
 - Browse **Unread**, **Starred**, **Archived**, and **custom folders**
-- **Download and read** articles as HTML in KOReader's built-in reader
+- **Download and read** articles as HTML or EPUB in KOReader's built-in reader
+- **EPUB output** — articles can be saved as EPUB files with optional image inclusion
 - **Download only** (long-press → Download) without leaving the list — enables multi-article downloads
 - **Article info on long-press**: date saved, word count, estimated reading time, progress, and source URL
 - **Manage articles**: Archive, Delete, Star (via long-press)
@@ -14,7 +15,9 @@ Download and read articles from your Instapaper account directly in KOReader.
 - **Auto WiFi connect** — triggers network connection automatically when needed
 - **Title injection** — missing article titles are added as a heading in the downloaded HTML
 - **Reading progress** display (percentage read)
+- **Configurable article list limit** — fetch up to 10, 25, 50, 100, 200, or 500 articles at once
 - **Open downloads folder** shortcut in the menu
+- **Clear downloads cache** — delete all downloaded files and folders with a single tap
 - **Persistent credentials** — stay logged in across sessions
 
 ## Installation
@@ -86,7 +89,7 @@ From the Instapaper menu, choose:
 ### Read an Article
 
 - **Tap** an article to download and open it in KOReader's reader
-- Articles are saved to `koreader/instapaper/` as HTML files
+- Articles are saved to `koreader/instapaper/` as HTML or EPUB files depending on your settings
 - If the article has no heading, its Instapaper title is automatically added at the top
 
 ### Long-press an Article
@@ -111,6 +114,18 @@ Select **Bulk download...** from the menu to download multiple articles at once:
 ### Open Downloads Folder
 
 Select **Open downloads folder** to open the local `koreader/instapaper/` directory in KOReader's file manager.
+
+### Clear Downloads Cache
+
+Select **Clear downloads cache** to delete all downloaded files and folders (including `.sdr` metadata folders) from the downloads directory. A confirmation dialog is shown before deletion.
+
+### Settings
+
+Select **Settings** from the Instapaper menu to configure:
+
+- **Article list limit** — Number of articles fetched per request: 10, 25, 50, 100, 200, or 500 (default: 50)
+- **Output format** — Save articles as **HTML** (default) or **EPUB**
+- **Include images (EPUB)** — When EPUB format is selected, optionally download and embed article images into the EPUB file (ON/OFF)
 
 ## Implementation Details
 
