@@ -126,6 +126,10 @@ Select **Settings** from the Instapaper menu to configure:
 - **Article list limit** — Number of articles fetched per request: 10, 25, 50, 100, 200, or 500 (default: 50)
 - **Output format** — Save articles as **HTML** (default) or **EPUB**
 - **Include images (EPUB)** — When EPUB format is selected, optionally download and embed article images into the EPUB file (ON/OFF)
+- **After download** — Action to perform after downloading individual articles (tap or long-press → Download/Open):
+  - **None** (default) — No action, article stays in its current folder
+  - **Archive only** — Move article to Archive folder
+  - **Archive + Mark read** — Move to Archive and mark as 100% read
 
 ## Implementation Details
 
@@ -140,6 +144,7 @@ This plugin uses the **Instapaper Full API** (OAuth 1.0a):
 - **`/api/1/bookmarks/list`** — Fetch articles (with folder filtering)
 - **`/api/1/bookmarks/get_text`** — Download article HTML
 - **`/api/1/bookmarks/archive`** — Archive an article
+- **`/api/1/bookmarks/update_read_progress`** — Update reading progress on an article
 - **`/api/1/bookmarks/delete`** — Delete an article
 - **`/api/1/bookmarks/star`** — Star an article
 - **`/api/1/folders/list`** — Fetch user-created folders
