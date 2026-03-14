@@ -5,6 +5,7 @@ local logger = require("logger")
 local ltn12 = require("ltn12")
 local socketutil = require("socketutil")
 local urlmod = require("socket.url")
+local util = require("util")
 
 local InstapaperEpub = {}
 
@@ -158,6 +159,7 @@ function InstapaperEpub.buildEpubPath(download_dir, bookmark)
     local safe_title = (bookmark.title or "article")
         :gsub("[/\\%?%%%*%:%|%\"%<%>]", "_")
         :sub(1, 100)
+    safe_title = util.fixUtf8(safe_title, "_")
     return download_dir .. "/"
         .. tostring(bookmark.bookmark_id) .. "_" .. safe_title .. ".epub"
 end
