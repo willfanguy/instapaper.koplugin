@@ -188,6 +188,7 @@ function Instapaper:loadSettings()
     self.article_limit      = self.settings:readSetting("article_limit") or 50
     self.output_format      = self.settings:readSetting("output_format") or "html"
     self.include_images     = self.settings:readSetting("include_images") or false
+    self.after_download_action = self.settings:readSetting("after_download_action") or "none"
 end
 
 function Instapaper:saveSettings()
@@ -199,6 +200,7 @@ function Instapaper:saveSettings()
     self.settings:saveSetting("article_limit",      self.article_limit)
     self.settings:saveSetting("output_format",      self.output_format)
     self.settings:saveSetting("include_images",     self.include_images)
+    self.settings:saveSetting("after_download_action", self.after_download_action)
     self.settings:flush()
 end
 
@@ -402,6 +404,7 @@ function Instapaper:showSettingsDialog()
 
     local output_format = self.output_format or "html"
     local include_images = self.include_images or false
+    local after_download_action = self.after_download_action or "none"
 
     local settings_dialog
     local function rebuildSettingsDialog()
@@ -412,12 +415,21 @@ function Instapaper:showSettingsDialog()
         local fmt_label = output_format == "epub" and "EPUB" or "HTML"
         local img_label = include_images and _("ON") or _("OFF")
         local limit_label = tostring(limit_choices[limit_idx])
+        local action_label
+        if after_download_action == "archive" then
+            action_label = _("Archive only")
+        elseif after_download_action == "read" then
+            action_label = _("Archive + Mark read")
+        else
+            action_label = _("None")
+        end
 
         settings_dialog = ButtonDialog:new{
             title = _("Instapaper settings")
                 .. "\n" .. _("Article list limit: ") .. limit_label
                 .. "\n" .. _("Output format: ") .. fmt_label
-                .. "\n" .. _("Include images (EPUB): ") .. img_label,
+                .. "\n" .. _("Include images (EPUB): ") .. img_label
+                .. "\n" .. _("After download: ") .. action_label,
             buttons = {
                 {
                     {
@@ -443,6 +455,19 @@ function Instapaper:showSettingsDialog()
                             rebuildSettingsDialog()
                         end,
                     },
+                    {
+                        text = _("< After download >"),
+                        callback = function()
+                            if after_download_action == "none" then
+                                after_download_action = "archive"
+                            elseif after_download_action == "archive" then
+                                after_download_action = "read"
+                            else
+                                after_download_action = "none"
+                            end
+                            rebuildSettingsDialog()
+                        end,
+                    },
                 },
                 {
                     {
@@ -452,6 +477,7 @@ function Instapaper:showSettingsDialog()
                             self.article_limit  = limit_choices[limit_idx]
                             self.output_format  = output_format
                             self.include_images = include_images
+                            self.after_download_action = after_download_action
                             self:saveSettings()
                             UIManager:show(InfoMessage:new{
                                 text = _("Settings saved."),
@@ -899,6 +925,21 @@ function Instapaper:downloadArticleOnly(bookmark)
         text = T(_("Saved: %1"), short_title),
         timeout = 2,
     })
+
+    if self.after_download_action == "archive" then
+        self:apiRequest("/api/1/bookmarks/archive", {
+            bookmark_id = tostring(bookmark.bookmark_id),
+        })
+    elseif self.after_download_action == "read" then
+        self:apiRequest("/api/1/bookmarks/archive", {
+            bookmark_id = tostring(bookmark.bookmark_id),
+        })
+        self:apiRequest("/api/1/bookmarks/update_read_progress", {
+            bookmark_id = tostring(bookmark.bookmark_id),
+            progress = "1.0",
+            progress_timestamp = tostring(os.time()),
+        })
+    end
 end
 
 function Instapaper:downloadAndOpenArticle(bookmark)
@@ -921,6 +962,21 @@ function Instapaper:downloadAndOpenArticle(bookmark)
             text = _("Could not save article file."),
         })
         return
+    end
+
+    if self.after_download_action == "archive" then
+        self:apiRequest("/api/1/bookmarks/archive", {
+            bookmark_id = tostring(bookmark.bookmark_id),
+        })
+    elseif self.after_download_action == "read" then
+        self:apiRequest("/api/1/bookmarks/archive", {
+            bookmark_id = tostring(bookmark.bookmark_id),
+        })
+        self:apiRequest("/api/1/bookmarks/update_read_progress", {
+            bookmark_id = tostring(bookmark.bookmark_id),
+            progress = "1.0",
+            progress_timestamp = tostring(os.time()),
+        })
     end
 
     -- Open in KOReader
