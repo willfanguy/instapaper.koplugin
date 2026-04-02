@@ -33,7 +33,7 @@ Download and read articles from your Instapaper account directly in KOReader.
 
 Before you can use this plugin, you need to request OAuth consumer credentials from Instapaper:
 
-1. Visit: https://www.instapaper.com/main/request_oauth_consumer_token
+1. Visit: https://www.instapaper.com/user/login?next=%2Fdevelopers%2Fapplications%2Fcreate
 2. Fill out the form with your application details
 3. Wait for approval (usually within a few days)
 4. You'll receive a **Consumer Key** and **Consumer Secret**
