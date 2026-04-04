@@ -169,11 +169,41 @@ function Instapaper:apiRequest(endpoint, body_params, raw_response)
 end
 
 --------------------------------------------------------------------
+-- Profile Actions
+--------------------------------------------------------------------
+
+function Instapaper:onInstapaperBulkDownload()
+    self:ensureOnlineAndLoggedIn(function()
+        self:showBulkDownloadDialog()
+    end)
+    return true
+end
+
+function Instapaper:onInstapaperDownloadUnread()
+    self:ensureOnlineAndLoggedIn(function()
+        local folder_val    = "unread"
+        local days_limit    = 0 -- 0 = no limit
+        local archive_after = self.settings:readSetting("bulk_archive_after") or false
+        local delete_after  = self.settings:readSetting("bulk_delete_after") or false
+        self:runBulkDownload(folder_val, days_limit, archive_after, delete_after)
+    end)
+    return true
+end
+
+function Instapaper:onDispatcherRegisterActions()
+    Dispatcher:registerAction("instapaper_bulk_download",
+        { category = "none", event = "InstapaperBulkDownload", title = _("Instapaper bulk download"), general = true, })
+    Dispatcher:registerAction("instapaper_download_unread",
+        { category = "none", event = "InstapaperDownloadUnread", title = _("Instapaper download unread"), general = true, separator = true, })
+end
+
+--------------------------------------------------------------------
 -- Settings
 --------------------------------------------------------------------
 
 function Instapaper:init()
     self.ui.menu:registerToMainMenu(self)
+    self:onDispatcherRegisterActions()
     self:loadSettings()
 end
 
