@@ -219,6 +219,7 @@ function Instapaper:loadSettings()
     self.output_format      = self.settings:readSetting("output_format") or "html"
     self.include_images     = self.settings:readSetting("include_images") or false
     self.after_download_action = self.settings:readSetting("after_download_action") or "none"
+    self.cache_folder       = self.settings:readSetting("cache_folder")
 end
 
 function Instapaper:saveSettings()
@@ -231,6 +232,7 @@ function Instapaper:saveSettings()
     self.settings:saveSetting("output_format",      self.output_format)
     self.settings:saveSetting("include_images",     self.include_images)
     self.settings:saveSetting("after_download_action", self.after_download_action)
+    self.settings:saveSetting("cache_folder",       self.cache_folder)
     self.settings:flush()
 end
 
@@ -435,6 +437,7 @@ function Instapaper:showSettingsDialog()
     local output_format = self.output_format or "html"
     local include_images = self.include_images or false
     local after_download_action = self.after_download_action or "none"
+    local cache_folder = self.cache_folder
 
     local settings_dialog
     local function rebuildSettingsDialog()
@@ -442,6 +445,7 @@ function Instapaper:showSettingsDialog()
             UIManager:close(settings_dialog)
         end
 
+        local default_dir = DataStorage:getDataDir() .. "/instapaper"
         local fmt_label = output_format == "epub" and "EPUB" or "HTML"
         local img_label = include_images and _("ON") or _("OFF")
         local limit_label = tostring(limit_choices[limit_idx])
@@ -453,13 +457,25 @@ function Instapaper:showSettingsDialog()
         else
             action_label = _("None")
         end
+        
+        local cache_label
+        if cache_folder and cache_folder ~= "" then
+            if #cache_folder > 40 then
+                cache_label = "..." .. cache_folder:sub(-37)
+            else
+                cache_label = cache_folder
+            end
+        else
+            cache_label = _("Default")
+        end
 
         settings_dialog = ButtonDialog:new{
             title = _("Instapaper settings")
                 .. "\n" .. _("Article list limit: ") .. limit_label
                 .. "\n" .. _("Output format: ") .. fmt_label
                 .. "\n" .. _("Include images (EPUB): ") .. img_label
-                .. "\n" .. _("After download: ") .. action_label,
+                .. "\n" .. _("After download: ") .. action_label
+                .. "\n" .. _("Cache folder: ") .. cache_label,
             buttons = {
                 {
                     {
@@ -501,6 +517,18 @@ function Instapaper:showSettingsDialog()
                 },
                 {
                     {
+                        text = _("< Cache folder >"),
+                        callback = function()
+                            UIManager:close(settings_dialog)
+                            self:showCacheFolderDialog(function(new_path)
+                                cache_folder = new_path
+                                rebuildSettingsDialog()
+                            end, cache_folder)
+                        end,
+                    },
+                },
+                {
+                    {
                         text = _("Save"),
                         callback = function()
                             UIManager:close(settings_dialog)
@@ -508,6 +536,7 @@ function Instapaper:showSettingsDialog()
                             self.output_format  = output_format
                             self.include_images = include_images
                             self.after_download_action = after_download_action
+                            self.cache_folder = cache_folder
                             self:saveSettings()
                             UIManager:show(InfoMessage:new{
                                 text = _("Settings saved."),
@@ -528,6 +557,66 @@ function Instapaper:showSettingsDialog()
     end
 
     rebuildSettingsDialog()
+end
+
+function Instapaper:showCacheFolderDialog(return_callback, current_folder)
+    local default_dir = DataStorage:getDataDir() .. "/instapaper"
+    
+    local cache_dialog
+    cache_dialog = MultiInputDialog:new{
+        title = _("Cache folder"),
+        fields = {
+            {
+                text = current_folder or "",
+                hint = current_folder and current_folder ~= "" and current_folder or default_dir,
+            },
+        },
+        buttons = {
+            {
+                {
+                    text = _("Cancel"),
+                    id = "close",
+                    callback = function()
+                        UIManager:close(cache_dialog)
+                        if return_callback then
+                            return_callback(current_folder)
+                        end
+                    end,
+                },
+                {
+                    text = _("OK"),
+                    is_enter_default = true,
+                    callback = function()
+                        local fields = cache_dialog:getFields()
+                        local new_path = fields[1]
+                        UIManager:close(cache_dialog)
+                        
+                        if new_path and new_path ~= "" then
+                            local attr = lfs.attributes(new_path)
+                            if attr and attr.mode == "directory" then
+                                if return_callback then
+                                    return_callback(new_path)
+                                end
+                            else
+                                UIManager:show(InfoMessage:new{
+                                    text = _("The specified path does not exist."),
+                                })
+                                if return_callback then
+                                    return_callback(current_folder)
+                                end
+                            end
+                        else
+                            if return_callback then
+                                return_callback(nil)
+                            end
+                        end
+                    end,
+                },
+            },
+        },
+    }
+    UIManager:show(cache_dialog)
+    cache_dialog:onShowKeyboard()
 end
 
 function Instapaper:showLoginDialog()
@@ -853,7 +942,12 @@ function Instapaper:showArticleActions(bookmark, parent_menu, folder_id)
 end
 
 function Instapaper:getDownloadDir()
-    local dir = DataStorage:getDataDir() .. "/instapaper"
+    local dir
+    if self.cache_folder and self.cache_folder ~= "" then
+        dir = self.cache_folder
+    else
+        dir = DataStorage:getDataDir() .. "/instapaper"
+    end
     lfs.mkdir(dir)
     return dir
 end
