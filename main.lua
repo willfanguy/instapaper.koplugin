@@ -211,10 +211,31 @@ end
 -- Settings
 --------------------------------------------------------------------
 
+-- Inject "instapaper" into KOReader's main-menu order list so the entry
+-- appears near the top instead of being appended at the bottom (the default
+-- for unlisted plugin entries). Modifies the cached order table in place;
+-- the menu builder reads this table when the user first opens the main menu.
+local function injectIntoMainMenu(module_name)
+    local ok, order = pcall(require, module_name)
+    if not ok or not order or type(order.main) ~= "table" then return end
+    for _, v in ipairs(order.main) do
+        if v == "instapaper" then return end  -- idempotent
+    end
+    for i, item in ipairs(order.main) do
+        if item == "open_last_document" then
+            table.insert(order.main, i + 1, "instapaper")
+            return
+        end
+    end
+    -- anchor not found (KOReader internals shifted) -- fall back to bottom
+end
+
 function Instapaper:init()
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
     self:loadSettings()
+    injectIntoMainMenu("ui/elements/filemanager_menu_order")
+    injectIntoMainMenu("ui/elements/reader_menu_order")
 end
 
 function Instapaper:loadSettings()
