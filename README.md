@@ -4,6 +4,9 @@ Download and read articles from your Instapaper account directly in KOReader.
 
 ## Features
 
+- **One-tap Sync** — full-mirror sync of your Unread folder: archives finished articles, removes locals that are no longer Unread, and downloads any new ones
+- **Auto-archive finished articles** — if KOReader marks an article complete (end-of-book prompt or "Reading status → Finished"), the next sync archives it on Instapaper and deletes the local file
+- **Top-level menu placement** — Instapaper appears on KOReader's main menu (no longer buried under Tools); also bindable to a gesture via Dispatcher (`Instapaper sync`)
 - **OAuth 1.0a authentication** using Instapaper's official Full API
 - Browse **Unread**, **Starred**, **Archived**, and **custom folders**
 - **Download and read** articles as HTML or EPUB in KOReader's built-in reader
@@ -123,6 +126,16 @@ Select **Open downloads folder** to open the local `koreader/instapaper/` direct
 
 Select **Clear downloads cache** to delete all downloaded files and folders (including `.sdr` metadata folders) from the downloads directory. A confirmation dialog is shown before deletion.
 
+### Sync
+
+Select **Sync now** at the top of the Instapaper menu (or bind the **Instapaper sync** action to a gesture) to mirror your Unread folder to the device:
+
+1. **Archive finished**: any locally downloaded article whose KOReader status is "complete" is archived on Instapaper and deleted from disk (toggleable in Settings → "Archive finished on sync").
+2. **Orphan sweep**: any local article whose bookmark is no longer in your Instapaper Unread folder is deleted from disk (it was archived or deleted from another device).
+3. **Download missing**: any article in your Instapaper Unread folder that isn't already on disk is downloaded in your configured format (HTML or EPUB).
+
+A summary is shown when sync completes: `Archived: N  Removed: N  Downloaded: N  Failed: N`.
+
 ### Settings
 
 Select **Settings** from the Instapaper menu to configure:
@@ -134,6 +147,7 @@ Select **Settings** from the Instapaper menu to configure:
   - **None** (default) — No action, article stays in its current folder
   - **Archive only** — Move article to Archive folder
   - **Archive + Mark read** — Move to Archive and mark as 100% read
+- **Archive finished on sync** — When ON (default), `Sync now` archives articles you've marked finished and deletes the local file. Turn OFF if you want finished articles to stay on the device.
 
 ## Implementation Details
 

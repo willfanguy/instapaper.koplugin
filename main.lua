@@ -1,5 +1,6 @@
 local ButtonDialog = require("ui/widget/buttondialog")
 local DataStorage = require("datastorage")
+local Dispatcher = require("dispatcher")
 local FFIUtil = require("ffi/util")
 local InfoMessage = require("ui/widget/infomessage")
 local JSON = require("json")
@@ -190,7 +191,16 @@ function Instapaper:onInstapaperDownloadUnread()
     return true
 end
 
+function Instapaper:onInstapaperSync()
+    self:ensureOnlineAndLoggedIn(function()
+        self:syncToDevice()
+    end)
+    return true
+end
+
 function Instapaper:onDispatcherRegisterActions()
+    Dispatcher:registerAction("instapaper_sync",
+        { category = "none", event = "InstapaperSync", title = _("Instapaper sync"), general = true, })
     Dispatcher:registerAction("instapaper_bulk_download",
         { category = "none", event = "InstapaperBulkDownload", title = _("Instapaper bulk download"), general = true, })
     Dispatcher:registerAction("instapaper_download_unread",
@@ -220,6 +230,10 @@ function Instapaper:loadSettings()
     self.include_images     = self.settings:readSetting("include_images") or false
     self.after_download_action = self.settings:readSetting("after_download_action") or "none"
     self.cache_folder       = self.settings:readSetting("cache_folder")
+    -- auto_archive_on_sync defaults to true; nil-coalesce treats explicit false correctly
+    local aaos = self.settings:readSetting("auto_archive_on_sync")
+    if aaos == nil then aaos = true end
+    self.auto_archive_on_sync = aaos
 end
 
 function Instapaper:saveSettings()
@@ -233,6 +247,7 @@ function Instapaper:saveSettings()
     self.settings:saveSetting("include_images",     self.include_images)
     self.settings:saveSetting("after_download_action", self.after_download_action)
     self.settings:saveSetting("cache_folder",       self.cache_folder)
+    self.settings:saveSetting("auto_archive_on_sync", self.auto_archive_on_sync)
     self.settings:flush()
 end
 
@@ -254,8 +269,17 @@ end
 function Instapaper:addToMainMenu(menu_items)
     menu_items.instapaper = {
         text = _("Instapaper"),
-        sorting_hint = "tools",
+        sorting_hint = "main",
         sub_item_table = {
+            {
+                text = _("Sync now"),
+                callback = function()
+                    self:ensureOnlineAndLoggedIn(function()
+                        self:syncToDevice()
+                    end)
+                end,
+                separator = true,
+            },
             {
                 text = _("Unread articles"),
                 callback = function()
@@ -438,6 +462,7 @@ function Instapaper:showSettingsDialog()
     local include_images = self.include_images or false
     local after_download_action = self.after_download_action or "none"
     local cache_folder = self.cache_folder
+    local auto_archive_on_sync = self.auto_archive_on_sync
 
     local settings_dialog
     local function rebuildSettingsDialog()
@@ -469,12 +494,15 @@ function Instapaper:showSettingsDialog()
             cache_label = _("Default")
         end
 
+        local sync_archive_label = auto_archive_on_sync and _("ON") or _("OFF")
+
         settings_dialog = ButtonDialog:new{
             title = _("Instapaper settings")
                 .. "\n" .. _("Article list limit: ") .. limit_label
                 .. "\n" .. _("Output format: ") .. fmt_label
                 .. "\n" .. _("Include images (EPUB): ") .. img_label
                 .. "\n" .. _("After download: ") .. action_label
+                .. "\n" .. _("Archive finished on sync: ") .. sync_archive_label
                 .. "\n" .. _("Cache folder: ") .. cache_label,
             buttons = {
                 {
@@ -517,6 +545,13 @@ function Instapaper:showSettingsDialog()
                 },
                 {
                     {
+                        text = _("Sync archive: ") .. sync_archive_label,
+                        callback = function()
+                            auto_archive_on_sync = not auto_archive_on_sync
+                            rebuildSettingsDialog()
+                        end,
+                    },
+                    {
                         text = _("< Cache folder >"),
                         callback = function()
                             UIManager:close(settings_dialog)
@@ -537,6 +572,7 @@ function Instapaper:showSettingsDialog()
                             self.include_images = include_images
                             self.after_download_action = after_download_action
                             self.cache_folder = cache_folder
+                            self.auto_archive_on_sync = auto_archive_on_sync
                             self:saveSettings()
                             UIManager:show(InfoMessage:new{
                                 text = _("Settings saved."),
@@ -1449,6 +1485,152 @@ function Instapaper:runBulkDownload(folder_id, days_limit, archive_after, delete
         tostring(downloaded), tostring(failed))
     UIManager:show(InfoMessage:new{
         text = msg,
+    })
+end
+
+--------------------------------------------------------------------
+-- Sync (full mirror of Unread folder)
+--------------------------------------------------------------------
+
+-- Walk the cache directory and return { id, path, name } for every file
+-- that matches the {bookmark_id}_{title}.{html|epub} convention.
+function Instapaper:getLocalArticles()
+    local dir = self:getDownloadDir()
+    local items = {}
+    for entry in lfs.dir(dir) do
+        if entry ~= "." and entry ~= ".." then
+            local id = entry:match("^(%d+)_.+%.html$")
+                    or entry:match("^(%d+)_.+%.epub$")
+            if id then
+                table.insert(items, {
+                    id   = id,
+                    path = dir .. "/" .. entry,
+                    name = entry,
+                })
+            end
+        end
+    end
+    return items
+end
+
+-- Returns true if KOReader has marked the document complete (end-of-book
+-- prompt accepted, or "Reading status -> Finished" set manually).
+function Instapaper:isDocumentFinished(filepath)
+    local ok, DocSettings = pcall(require, "docsettings")
+    if not ok or not DocSettings then return false end
+    local doc_settings = DocSettings:open(filepath)
+    if not doc_settings then return false end
+    local summary = doc_settings:readSetting("summary")
+    return summary and summary.status == "complete"
+end
+
+-- Remove the article file plus its KOReader sidecar. Uses DocSettings:purge()
+-- so both legacy ("foo.sdr") and modern ("foo.html.sdr") naming conventions
+-- are handled, plus central-folder mode if that's ever configured.
+function Instapaper:removeLocalArticle(filepath)
+    local ok, DocSettings = pcall(require, "docsettings")
+    if ok and DocSettings then
+        local doc_settings = DocSettings:open(filepath)
+        if doc_settings and doc_settings.purge then
+            doc_settings:purge()
+        end
+    end
+    os.remove(filepath)
+end
+
+-- For each finished local article: archive on Instapaper, then delete locally.
+-- Returns the archived count.
+function Instapaper:archiveFinishedDownloads()
+    local archived = 0
+    for _, item in ipairs(self:getLocalArticles()) do
+        if self:isDocumentFinished(item.path) then
+            local ok = self:apiRequest("/api/1/bookmarks/archive", {
+                bookmark_id = item.id,
+            })
+            if ok then
+                self:removeLocalArticle(item.path)
+                archived = archived + 1
+            end
+        end
+    end
+    return archived
+end
+
+-- Full mirror sync of the Unread folder:
+--   1. Archive finished articles (if enabled) and remove their local files.
+--   2. Fetch the server's Unread list.
+--   3. Delete locals whose bookmark_id is no longer in Unread (orphans).
+--   4. Download server-side articles missing from disk.
+function Instapaper:syncToDevice()
+    UIManager:show(InfoMessage:new{
+        text = _("Syncing Instapaper..."),
+        timeout = 1,
+    })
+
+    -- Step 1
+    local archived = 0
+    if self.auto_archive_on_sync then
+        archived = self:archiveFinishedDownloads()
+    end
+
+    -- Step 2
+    local ok, body, code = self:apiRequest("/api/1/bookmarks/list", {
+        limit = "500",
+    })
+    if not ok then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Sync failed: %1"), body or tostring(code)),
+        })
+        return
+    end
+    local parse_ok, data = pcall(JSON.decode, body)
+    if not parse_ok or type(data) ~= "table" then
+        UIManager:show(InfoMessage:new{ text = _("Failed to parse article list.") })
+        return
+    end
+
+    local server_ids = {}
+    local server_bookmarks = {}
+    for _, item in ipairs(data) do
+        if type(item) == "table" and item.type == "bookmark" then
+            server_ids[tostring(item.bookmark_id)] = true
+            table.insert(server_bookmarks, item)
+        end
+    end
+
+    -- Step 3: orphan sweep
+    local removed = 0
+    local local_ids = {}
+    for _, item in ipairs(self:getLocalArticles()) do
+        local_ids[item.id] = true
+        if not server_ids[item.id] then
+            self:removeLocalArticle(item.path)
+            removed = removed + 1
+        end
+    end
+
+    -- Step 4: download what's missing
+    local downloaded, failed = 0, 0
+    for _, bm in ipairs(server_bookmarks) do
+        local id_str = tostring(bm.bookmark_id)
+        if not local_ids[id_str] then
+            local html = self:fetchArticleHtml(bm)
+            if html then
+                if self:saveArticle(bm, html) then
+                    downloaded = downloaded + 1
+                else
+                    failed = failed + 1
+                end
+            else
+                failed = failed + 1
+            end
+        end
+    end
+
+    UIManager:show(InfoMessage:new{
+        text = T(_("Sync complete.\nArchived: %1  Removed: %2\nDownloaded: %3  Failed: %4"),
+            tostring(archived), tostring(removed),
+            tostring(downloaded), tostring(failed)),
     })
 end
 
