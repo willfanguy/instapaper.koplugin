@@ -256,6 +256,7 @@ function Instapaper:loadSettings()
     if aaos == nil then aaos = true end
     self.auto_archive_on_sync = aaos
     self.articles_per_page  = self.settings:readSetting("articles_per_page") or 25
+    self.sort_by            = self.settings:readSetting("sort_by") or "saved_desc"
 end
 
 function Instapaper:saveSettings()
@@ -271,6 +272,7 @@ function Instapaper:saveSettings()
     self.settings:saveSetting("cache_folder",       self.cache_folder)
     self.settings:saveSetting("auto_archive_on_sync", self.auto_archive_on_sync)
     self.settings:saveSetting("articles_per_page", self.articles_per_page)
+    self.settings:saveSetting("sort_by",            self.sort_by)
     self.settings:flush()
 end
 
@@ -500,6 +502,16 @@ function Instapaper:showSettingsDialog()
         if v == self.articles_per_page then perpage_idx = i; break end
     end
 
+    local sort_choices = {
+        { value = "saved_desc", label = _("Newest first") },
+        { value = "saved_asc",  label = _("Oldest first") },
+        { value = "title_asc",  label = _("Title A-Z")   },
+    }
+    local sort_idx = 1
+    for i, s in ipairs(sort_choices) do
+        if s.value == self.sort_by then sort_idx = i; break end
+    end
+
     local settings_dialog
     local function rebuildSettingsDialog()
         if settings_dialog then
@@ -532,11 +544,13 @@ function Instapaper:showSettingsDialog()
 
         local sync_archive_label = auto_archive_on_sync and _("ON") or _("OFF")
         local perpage_label = tostring(perpage_choices[perpage_idx])
+        local sort_label    = sort_choices[sort_idx].label
 
         settings_dialog = ButtonDialog:new{
             title = _("Instapaper settings")
                 .. "\n" .. _("Article list limit: ") .. limit_label
                 .. "\n" .. _("Articles per page: ") .. perpage_label
+                .. "\n" .. _("Sort: ") .. sort_label
                 .. "\n" .. _("Output format: ") .. fmt_label
                 .. "\n" .. _("Include images (EPUB): ") .. img_label
                 .. "\n" .. _("After download: ") .. action_label
@@ -562,6 +576,15 @@ function Instapaper:showSettingsDialog()
                         text = _("< Format >"),
                         callback = function()
                             output_format = output_format == "html" and "epub" or "html"
+                            rebuildSettingsDialog()
+                        end,
+                    },
+                },
+                {
+                    {
+                        text = _("< Sort >"),
+                        callback = function()
+                            sort_idx = (sort_idx % #sort_choices) + 1
                             rebuildSettingsDialog()
                         end,
                     },
@@ -619,6 +642,7 @@ function Instapaper:showSettingsDialog()
                             self.cache_folder = cache_folder
                             self.auto_archive_on_sync = auto_archive_on_sync
                             self.articles_per_page = perpage_choices[perpage_idx]
+                            self.sort_by = sort_choices[sort_idx].value
                             self:saveSettings()
                             UIManager:show(InfoMessage:new{
                                 text = _("Settings saved."),
@@ -860,20 +884,18 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
         archive = _("Archive"),
     }
 
-    -- Right-column annotation: reading-time estimate (200 wpm) and progress.
-    -- "5 min", "1h 23m · 47%", "47%", or nil if neither value is available.
+    -- Right-column annotation: saved date plus reading progress.
+    -- Saved date format: "Apr 28" (current year) or "Apr 28 '25" (older).
+    -- Progress is appended only when > 0. Both, either, or neither may render.
     local function formatMandatory(bm)
         local parts = {}
-        if bm.word_count and bm.word_count > 0 then
-            local mins = math.ceil(bm.word_count / 200)
-            if mins < 60 then
-                parts[#parts + 1] = tostring(mins) .. " min"
+        if bm.time and bm.time > 0 then
+            local current_year = tonumber(os.date("%Y"))
+            local item_year    = tonumber(os.date("%Y", bm.time))
+            if item_year == current_year then
+                parts[#parts + 1] = os.date("%b %-d", bm.time)
             else
-                local h = math.floor(mins / 60)
-                local m = mins % 60
-                parts[#parts + 1] = (m == 0)
-                    and (tostring(h) .. "h")
-                    or  (tostring(h) .. "h " .. tostring(m) .. "m")
+                parts[#parts + 1] = os.date("%b %-d '%y", bm.time)
             end
         end
         if bm.progress and bm.progress > 0 then
@@ -882,6 +904,20 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
         if #parts == 0 then return nil end
         return table.concat(parts, " · ")
     end
+
+    -- Sort bookmarks in place per the user's chosen sort_by mode.
+    local function sortBookmarks(items, mode)
+        if mode == "saved_asc" then
+            table.sort(items, function(a, b) return (a.time or 0) < (b.time or 0) end)
+        elseif mode == "title_asc" then
+            table.sort(items, function(a, b)
+                return (a.title or ""):lower() < (b.title or ""):lower()
+            end)
+        else  -- saved_desc (default)
+            table.sort(items, function(a, b) return (a.time or 0) > (b.time or 0) end)
+        end
+    end
+    sortBookmarks(bookmarks, self.sort_by)
 
     local menu
     local menu_items = {}
@@ -918,14 +954,20 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
         menu_title = "Articles"
     end
     
+    -- Forcing items_font_size makes items_per_page visibly take effect:
+    -- without an explicit font size KOReader's auto-derivation runs lazily
+    -- and the row height doesn't shrink to actually pack more rows.
+    local items_font_size = Menu.getItemFontSize
+        and Menu.getItemFontSize(self.articles_per_page) or nil
+
     menu = Menu:new{
         title = "Instapaper - " .. menu_title,
         item_table = menu_items,
         is_borderless = true,
         is_popout = false,
         title_bar_fm_style = true,
-        perpage = self.articles_per_page,
         items_per_page = self.articles_per_page,
+        items_font_size = items_font_size,
         close_callback = function()
             UIManager:close(menu)
         end,

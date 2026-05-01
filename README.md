@@ -20,7 +20,8 @@ Download and read articles from your Instapaper account directly in KOReader.
 - **Reading progress** display (percentage read)
 - **Configurable article list limit** — fetch up to 10, 25, 50, 100, 200, or 500 articles at once
 - **Configurable articles per page** — show 14/20/25/30/40 entries on each page of the article list (default 25)
-- **Reading-time estimate** — each article shows its estimated reading time (e.g. `5 min` or `1h 23m`) in the right column of the list, so you can pick something that fits the time you have. Combined with reading progress when available: `5 min · 47%`
+- **Saved-date column** — each row shows when you saved the article (e.g. `Apr 28` or `Apr 28 '25`). When you've started reading, progress is appended: `Apr 28 · 47%`
+- **Sort** — articles can be sorted by **Newest first**, **Oldest first**, or **Title A-Z** via Settings → Sort
 - **Title-first filenames** — saved as `Article Title_ip_{bookmark_id}.html` so the file manager shows titles, not numbers
 - **One-shot rename** — *Rename downloaded articles* migrates legacy `{id}_title.html` files to the new title-first format, preserving reading progress
 - **Open downloads folder** shortcut in the menu
