@@ -839,17 +839,35 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
         archive = _("Archive"),
     }
 
+    -- Right-column annotation: reading-time estimate (200 wpm) and progress.
+    -- "5 min", "1h 23m · 47%", "47%", or nil if neither value is available.
+    local function formatMandatory(bm)
+        local parts = {}
+        if bm.word_count and bm.word_count > 0 then
+            local mins = math.ceil(bm.word_count / 200)
+            if mins < 60 then
+                parts[#parts + 1] = tostring(mins) .. " min"
+            else
+                local h = math.floor(mins / 60)
+                local m = mins % 60
+                parts[#parts + 1] = (m == 0)
+                    and (tostring(h) .. "h")
+                    or  (tostring(h) .. "h " .. tostring(m) .. "m")
+            end
+        end
+        if bm.progress and bm.progress > 0 then
+            parts[#parts + 1] = string.format("%d%%", bm.progress * 100)
+        end
+        if #parts == 0 then return nil end
+        return table.concat(parts, " · ")
+    end
+
     local menu
     local menu_items = {}
     for _, bm in ipairs(bookmarks) do
         local title = bm.title
         if not title or title == "" or type(title) ~= "string" then
             title = "Untitled"
-        end
-
-        local progress_str = nil
-        if bm.progress and bm.progress > 0 then
-            progress_str = string.format("%d%%", bm.progress * 100)
         end
 
         local item = {
@@ -866,8 +884,9 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
             hold_keep_menu_open = true,
         }
 
-        if progress_str then
-            item.mandatory = progress_str
+        local mandatory = formatMandatory(bm)
+        if mandatory then
+            item.mandatory = mandatory
         end
 
         table.insert(menu_items, item)
