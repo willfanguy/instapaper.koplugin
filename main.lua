@@ -271,14 +271,14 @@ end
 
 function Instapaper:addToMainMenu(menu_items)
     -- Count legacy-format files so the "Rename downloaded articles" entry
-    -- can hide itself once the migration is complete.
+    -- can dim itself once the migration is complete.
     local function countLegacyFiles()
-        local n = 0
         local dir = self:getDownloadDir()
-        local ok, iter = pcall(lfs.dir, dir)
-        if not ok then return 0 end
-        for entry in iter do
-            if entry:match("^(%d+)_.+%.html$") or entry:match("^(%d+)_.+%.epub$") then
+        if not lfs.attributes(dir, "mode") then return 0 end
+        local n = 0
+        for entry in lfs.dir(dir) do
+            if entry ~= "." and entry ~= ".."
+              and (entry:match("^(%d+)_.+%.html$") or entry:match("^(%d+)_.+%.epub$")) then
                 n = n + 1
             end
         end
@@ -339,9 +339,10 @@ function Instapaper:addToMainMenu(menu_items)
             {
                 text_func = function()
                     local n = countLegacyFiles()
-                    return n > 0
-                        and T(_("Rename downloaded articles (%1)"), tostring(n))
-                        or  ""  -- empty text hides the entry
+                    if n > 0 then
+                        return T(_("Rename downloaded articles (%1)"), tostring(n))
+                    end
+                    return _("Rename downloaded articles")
                 end,
                 enabled_func = function()
                     return countLegacyFiles() > 0
