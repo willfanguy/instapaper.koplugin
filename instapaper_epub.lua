@@ -161,7 +161,7 @@ function InstapaperEpub.buildEpubPath(download_dir, bookmark)
         :sub(1, 100)
     safe_title = util.fixUtf8(safe_title, "_")
     return download_dir .. "/"
-        .. tostring(bookmark.bookmark_id) .. "_" .. safe_title .. ".epub"
+        .. safe_title .. "_ip_" .. tostring(bookmark.bookmark_id) .. ".epub"
 end
 
 --------------------------------------------------------------------

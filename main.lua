@@ -234,6 +234,7 @@ function Instapaper:loadSettings()
     local aaos = self.settings:readSetting("auto_archive_on_sync")
     if aaos == nil then aaos = true end
     self.auto_archive_on_sync = aaos
+    self.articles_per_page  = self.settings:readSetting("articles_per_page") or 25
 end
 
 function Instapaper:saveSettings()
@@ -248,6 +249,7 @@ function Instapaper:saveSettings()
     self.settings:saveSetting("after_download_action", self.after_download_action)
     self.settings:saveSetting("cache_folder",       self.cache_folder)
     self.settings:saveSetting("auto_archive_on_sync", self.auto_archive_on_sync)
+    self.settings:saveSetting("articles_per_page", self.articles_per_page)
     self.settings:flush()
 end
 
@@ -332,6 +334,13 @@ function Instapaper:addToMainMenu(menu_items)
                 keep_menu_open = true,
                 callback = function()
                     self:clearDownloadsCache()
+                end,
+            },
+            {
+                text = _("Rename downloaded articles"),
+                keep_menu_open = true,
+                callback = function()
+                    self:confirmAndMigrateFilenames()
                 end,
                 separator = true,
             },
@@ -464,6 +473,12 @@ function Instapaper:showSettingsDialog()
     local cache_folder = self.cache_folder
     local auto_archive_on_sync = self.auto_archive_on_sync
 
+    local perpage_choices = { 14, 20, 25, 30, 40 }
+    local perpage_idx = 3  -- default 25
+    for i, v in ipairs(perpage_choices) do
+        if v == self.articles_per_page then perpage_idx = i; break end
+    end
+
     local settings_dialog
     local function rebuildSettingsDialog()
         if settings_dialog then
@@ -495,10 +510,12 @@ function Instapaper:showSettingsDialog()
         end
 
         local sync_archive_label = auto_archive_on_sync and _("ON") or _("OFF")
+        local perpage_label = tostring(perpage_choices[perpage_idx])
 
         settings_dialog = ButtonDialog:new{
             title = _("Instapaper settings")
                 .. "\n" .. _("Article list limit: ") .. limit_label
+                .. "\n" .. _("Articles per page: ") .. perpage_label
                 .. "\n" .. _("Output format: ") .. fmt_label
                 .. "\n" .. _("Include images (EPUB): ") .. img_label
                 .. "\n" .. _("After download: ") .. action_label
@@ -510,6 +527,13 @@ function Instapaper:showSettingsDialog()
                         text = _("< Limit >"),
                         callback = function()
                             limit_idx = (limit_idx % #limit_choices) + 1
+                            rebuildSettingsDialog()
+                        end,
+                    },
+                    {
+                        text = _("< Per page >"),
+                        callback = function()
+                            perpage_idx = (perpage_idx % #perpage_choices) + 1
                             rebuildSettingsDialog()
                         end,
                     },
@@ -573,6 +597,7 @@ function Instapaper:showSettingsDialog()
                             self.after_download_action = after_download_action
                             self.cache_folder = cache_folder
                             self.auto_archive_on_sync = auto_archive_on_sync
+                            self.articles_per_page = perpage_choices[perpage_idx]
                             self:saveSettings()
                             UIManager:show(InfoMessage:new{
                                 text = _("Settings saved."),
@@ -859,6 +884,8 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
         is_borderless = true,
         is_popout = false,
         title_bar_fm_style = true,
+        perpage = self.articles_per_page,
+        items_per_page = self.articles_per_page,
         close_callback = function()
             UIManager:close(menu)
         end,
@@ -994,7 +1021,7 @@ function Instapaper:buildFilepath(bookmark)
         :sub(1, 100)
     safe_title = util.fixUtf8(safe_title, "_")
     return self:getDownloadDir() .. "/"
-        .. tostring(bookmark.bookmark_id) .. "_" .. safe_title .. ".html"
+        .. safe_title .. "_ip_" .. tostring(bookmark.bookmark_id) .. ".html"
 end
 
 function Instapaper:injectTitleIfMissing(html, bookmark)
@@ -1147,6 +1174,42 @@ end
 --------------------------------------------------------------------
 -- Downloads folder
 --------------------------------------------------------------------
+
+function Instapaper:confirmAndMigrateFilenames()
+    local count = 0
+    local dir = self:getDownloadDir()
+    for entry in lfs.dir(dir) do
+        if entry:match("^(%d+)_.+%.html$") or entry:match("^(%d+)_.+%.epub$") then
+            count = count + 1
+        end
+    end
+
+    if count == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("No legacy-format files to rename."),
+            timeout = 2,
+        })
+        return
+    end
+
+    local ConfirmBox = require("ui/widget/confirmbox")
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Rename %1 article(s) to put the title first?\nReading progress and finished status will be preserved."),
+            tostring(count)),
+        ok_text = _("Rename"),
+        ok_callback = function()
+            local renamed, errs, skipped = self:migrateFilenames()
+            local msg
+            if errs > 0 or skipped > 0 then
+                msg = T(_("Renamed: %1\nErrors: %2  Skipped: %3"),
+                    tostring(renamed), tostring(errs), tostring(skipped))
+            else
+                msg = T(_("Renamed %1 article(s)."), tostring(renamed))
+            end
+            UIManager:show(InfoMessage:new{ text = msg })
+        end,
+    })
+end
 
 function Instapaper:clearDownloadsCache()
     local dir = self:getDownloadDir()
@@ -1492,14 +1555,18 @@ end
 -- Sync (full mirror of Unread folder)
 --------------------------------------------------------------------
 
--- Walk the cache directory and return { id, path, name } for every file
--- that matches the {bookmark_id}_{title}.{html|epub} convention.
+-- Walk the cache directory and return { id, path, name } for every article.
+-- Recognises two naming conventions:
+--   new:    {title}_ip_{bookmark_id}.{html|epub}   (post-1.4.0)
+--   legacy: {bookmark_id}_{title}.{html|epub}      (1.2.x and 1.3.x)
 function Instapaper:getLocalArticles()
     local dir = self:getDownloadDir()
     local items = {}
     for entry in lfs.dir(dir) do
         if entry ~= "." and entry ~= ".." then
-            local id = entry:match("^(%d+)_.+%.html$")
+            local id = entry:match("_ip_(%d+)%.html$")
+                    or entry:match("_ip_(%d+)%.epub$")
+                    or entry:match("^(%d+)_.+%.html$")
                     or entry:match("^(%d+)_.+%.epub$")
             if id then
                 table.insert(items, {
@@ -1511,6 +1578,53 @@ function Instapaper:getLocalArticles()
         end
     end
     return items
+end
+
+-- One-time migration: rename legacy {id}_{title}.ext files to {title}_ip_{id}.ext,
+-- moving the matching .sdr/ sidecar in lockstep so reading state and finished
+-- status are preserved. Returns (renamed_count, error_count, skipped_count).
+function Instapaper:migrateFilenames()
+    local dir = self:getDownloadDir()
+    local entries = {}
+    for entry in lfs.dir(dir) do
+        if entry ~= "." and entry ~= ".." then
+            table.insert(entries, entry)
+        end
+    end
+
+    local renamed, errs, skipped = 0, 0, 0
+    for _, entry in ipairs(entries) do
+        local id, base, ext = entry:match("^(%d+)_(.+)%.(html)$")
+        if not id then
+            id, base, ext = entry:match("^(%d+)_(.+)%.(epub)$")
+        end
+        if id then
+            local new_name = base .. "_ip_" .. id .. "." .. ext
+            local old_path = dir .. "/" .. entry
+            local new_path = dir .. "/" .. new_name
+
+            if lfs.attributes(new_path) then
+                skipped = skipped + 1  -- target exists; don't clobber
+            elseif os.rename(old_path, new_path) then
+                renamed = renamed + 1
+                -- Move sidecar (legacy pattern: {basename_no_ext}.sdr)
+                local old_sdr_legacy = dir .. "/" .. id .. "_" .. base .. ".sdr"
+                local new_sdr_legacy = dir .. "/" .. base .. "_ip_" .. id .. ".sdr"
+                if lfs.attributes(old_sdr_legacy, "mode") == "directory" then
+                    os.rename(old_sdr_legacy, new_sdr_legacy)
+                end
+                -- Move sidecar (modern pattern: {full_filename}.sdr)
+                local old_sdr_modern = old_path .. ".sdr"
+                local new_sdr_modern = new_path .. ".sdr"
+                if lfs.attributes(old_sdr_modern, "mode") == "directory" then
+                    os.rename(old_sdr_modern, new_sdr_modern)
+                end
+            else
+                errs = errs + 1
+            end
+        end
+    end
+    return renamed, errs, skipped
 end
 
 -- Returns true if KOReader has marked the document complete (end-of-book

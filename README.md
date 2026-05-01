@@ -19,6 +19,9 @@ Download and read articles from your Instapaper account directly in KOReader.
 - **Title injection** — missing article titles are added as a heading in the downloaded HTML
 - **Reading progress** display (percentage read)
 - **Configurable article list limit** — fetch up to 10, 25, 50, 100, 200, or 500 articles at once
+- **Configurable articles per page** — show 14/20/25/30/40 entries on each page of the article list (default 25)
+- **Title-first filenames** — saved as `Article Title_ip_{bookmark_id}.html` so the file manager shows titles, not numbers
+- **One-shot rename** — *Rename downloaded articles* migrates legacy `{id}_title.html` files to the new title-first format, preserving reading progress
 - **Open downloads folder** shortcut in the menu
 - **Clear downloads cache** — delete all downloaded files and folders with a single tap
 - **Persistent credentials** — stay logged in across sessions
