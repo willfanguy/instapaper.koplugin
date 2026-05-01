@@ -285,6 +285,11 @@ function Instapaper:addToMainMenu(menu_items)
         return n
     end
 
+    local function failureCount()
+        local failures = self:loadFailureList()
+        return failures and #failures or 0
+    end
+
     menu_items.instapaper = {
         text = _("Instapaper"),
         sorting_hint = "main",
@@ -334,6 +339,22 @@ function Instapaper:addToMainMenu(menu_items)
                 keep_menu_open = true,
                 callback = function()
                     self:clearDownloadsCache()
+                end,
+            },
+            {
+                text_func = function()
+                    local n = failureCount()
+                    if n > 0 then
+                        return T(_("View last sync failures (%1)"), tostring(n))
+                    end
+                    return _("View last sync failures")
+                end,
+                enabled_func = function()
+                    return failureCount() > 0
+                end,
+                keep_menu_open = true,
+                callback = function()
+                    self:showLastSyncFailures()
                 end,
             },
             {
@@ -1160,6 +1181,20 @@ function Instapaper:fetchArticleHtml(bookmark)
     return html, nil
 end
 
+-- Wrap fetchArticleHtml with one retry. Wi-Fi naps on Kindles cause the
+-- first call to hang then fail; the second call usually lands in an
+-- awake window. Returns html on success, nil + last error on failure.
+function Instapaper:fetchArticleHtmlWithRetry(bookmark, max_attempts)
+    max_attempts = max_attempts or 2
+    local last_err
+    for attempt = 1, max_attempts do
+        local html, err = self:fetchArticleHtml(bookmark)
+        if html then return html end
+        last_err = err
+    end
+    return nil, last_err
+end
+
 function Instapaper:saveArticleHtml(bookmark, html)
     local filepath = self:buildFilepath(bookmark)
     local f = io.open(filepath, "w")
@@ -1491,6 +1526,61 @@ function Instapaper:loadBookmarkCache(folder_id)
     return data
 end
 
+-- Persist (or clear, when the list is empty) the set of articles that
+-- failed to download in the most recent sync. The "View last sync
+-- failures" menu entry reads this back.
+function Instapaper:_failureListPath()
+    return self:getDownloadDir() .. "/.cache/last_sync_failures.json"
+end
+
+function Instapaper:saveFailureList(failures)
+    local cache_dir = self:getDownloadDir() .. "/.cache"
+    lfs.mkdir(cache_dir)
+    local path = self:_failureListPath()
+    if not failures or #failures == 0 then
+        os.remove(path)
+        return
+    end
+    local f = io.open(path, "w")
+    if not f then return end
+    f:write(JSON.encode(failures))
+    f:close()
+end
+
+function Instapaper:loadFailureList()
+    local f = io.open(self:_failureListPath(), "r")
+    if not f then return {} end
+    local content = f:read("*all")
+    f:close()
+    local ok, data = pcall(JSON.decode, content)
+    if not ok or type(data) ~= "table" then return {} end
+    return data
+end
+
+function Instapaper:showLastSyncFailures()
+    local failures = self:loadFailureList()
+    if #failures == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("No failed downloads from the last sync."),
+            timeout = 2,
+        })
+        return
+    end
+    local lines = { T(_("%1 articles failed in the last sync:"), tostring(#failures)) }
+    for i, fail in ipairs(failures) do
+        if i > 20 then
+            lines[#lines + 1] = T(_("... and %1 more"), tostring(#failures - 20))
+            break
+        end
+        local title = fail.title or "(untitled)"
+        if #title > 60 then title = title:sub(1, 57) .. "..." end
+        lines[#lines + 1] = "• " .. title
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = _("These will be retried on the next Sync now.")
+    UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+end
+
 --------------------------------------------------------------------
 -- Sync (full mirror of Unread folder)
 --------------------------------------------------------------------
@@ -1627,11 +1717,16 @@ function Instapaper:syncToDevice()
             archived = self:archiveFinishedDownloads()
         end
 
-        -- Step 2: fetch server's current Unread list
+        -- Step 2: fetch server's current Unread list (with one retry)
         Trapper:info(_("Fetching unread list..."))
-        local ok, body, code = self:apiRequest("/api/1/bookmarks/list", {
-            limit = "500",
-        })
+        local ok, body, code
+        for attempt = 1, 2 do
+            ok, body, code = self:apiRequest("/api/1/bookmarks/list", { limit = "500" })
+            if ok then break end
+            if attempt == 1 then
+                Trapper:info(_("Network hiccup -- retrying..."))
+            end
+        end
         if not ok then
             Trapper:info(T(_("Sync failed: %1"), body or tostring(code)))
             return
@@ -1666,7 +1761,7 @@ function Instapaper:syncToDevice()
             end
         end
 
-        -- Step 4: download what's missing, with progress
+        -- Step 4: download missing, with per-call retry and failure tracking
         local missing = {}
         for _, bm in ipairs(server_bookmarks) do
             if not local_ids[tostring(bm.bookmark_id)] then
@@ -1675,24 +1770,30 @@ function Instapaper:syncToDevice()
         end
 
         local downloaded, failed = 0, 0
+        local failures = {}  -- list of { id, title } for persistence
         local total = #missing
         for i, bm in ipairs(missing) do
             Trapper:info(T(_("Downloading %1/%2..."), tostring(i), tostring(total)))
-            local html = self:fetchArticleHtml(bm)
-            if html then
-                if self:saveArticle(bm, html) then
-                    downloaded = downloaded + 1
-                else
-                    failed = failed + 1
-                end
+            local html = self:fetchArticleHtmlWithRetry(bm, 2)
+            local saved = html and self:saveArticle(bm, html)
+            if saved then
+                downloaded = downloaded + 1
             else
                 failed = failed + 1
+                table.insert(failures, {
+                    id    = tostring(bm.bookmark_id),
+                    title = bm.title or "(untitled)",
+                })
             end
         end
 
-        Trapper:info(T(_("Sync complete.\nArchived: %1  Removed: %2\nDownloaded: %3  Failed: %4"),
+        -- Persist failure list so user can review later
+        self:saveFailureList(failures)
+
+        local summary = T(_("Sync complete.\nArchived: %1  Removed: %2\nDownloaded: %3  Failed: %4"),
             tostring(archived), tostring(removed),
-            tostring(downloaded), tostring(failed)))
+            tostring(downloaded), tostring(failed))
+        Trapper:info(summary)
     end)
 end
 
