@@ -4,7 +4,8 @@ Download and read articles from your Instapaper account directly in KOReader.
 
 ## Features
 
-- **One-tap Sync** — full-mirror sync of your Unread folder: archives finished articles, removes locals that are no longer Unread, and downloads any new ones
+- **One-tap Sync** — full-mirror sync of your Unread folder with live progress (`Downloading 47/200...`): archives finished articles, removes locals that are no longer Unread, and downloads any new ones
+- **Local-first article browsing** — tap *Articles* to see your library instantly, no network needed. Each row shows ● (downloaded, instant open) or ○ (server-only, fetches on tap)
 - **Auto-archive finished articles** — if KOReader marks an article complete (end-of-book prompt or "Reading status → Finished"), the next sync archives it on Instapaper and deletes the local file
 - **Top-level menu placement** — Instapaper appears on KOReader's main menu (no longer buried under Tools); also bindable to a gesture via Dispatcher (`Instapaper sync`)
 - **OAuth 1.0a authentication** using Instapaper's official Full API

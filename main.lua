@@ -173,24 +173,6 @@ end
 -- Profile Actions
 --------------------------------------------------------------------
 
-function Instapaper:onInstapaperBulkDownload()
-    self:ensureOnlineAndLoggedIn(function()
-        self:showBulkDownloadDialog()
-    end)
-    return true
-end
-
-function Instapaper:onInstapaperDownloadUnread()
-    self:ensureOnlineAndLoggedIn(function()
-        local folder_val    = "unread"
-        local days_limit    = 0 -- 0 = no limit
-        local archive_after = self.settings:readSetting("bulk_archive_after") or false
-        local delete_after  = self.settings:readSetting("bulk_delete_after") or false
-        self:runBulkDownload(folder_val, days_limit, archive_after, delete_after)
-    end)
-    return true
-end
-
 function Instapaper:onInstapaperSync()
     self:ensureOnlineAndLoggedIn(function()
         self:syncToDevice()
@@ -200,11 +182,7 @@ end
 
 function Instapaper:onDispatcherRegisterActions()
     Dispatcher:registerAction("instapaper_sync",
-        { category = "none", event = "InstapaperSync", title = _("Instapaper sync"), general = true, })
-    Dispatcher:registerAction("instapaper_bulk_download",
-        { category = "none", event = "InstapaperBulkDownload", title = _("Instapaper bulk download"), general = true, })
-    Dispatcher:registerAction("instapaper_download_unread",
-        { category = "none", event = "InstapaperDownloadUnread", title = _("Instapaper download unread"), general = true, separator = true, })
+        { category = "none", event = "InstapaperSync", title = _("Instapaper sync"), general = true, separator = true, })
 end
 
 --------------------------------------------------------------------
@@ -292,6 +270,21 @@ end
 --------------------------------------------------------------------
 
 function Instapaper:addToMainMenu(menu_items)
+    -- Count legacy-format files so the "Rename downloaded articles" entry
+    -- can hide itself once the migration is complete.
+    local function countLegacyFiles()
+        local n = 0
+        local dir = self:getDownloadDir()
+        local ok, iter = pcall(lfs.dir, dir)
+        if not ok then return 0 end
+        for entry in iter do
+            if entry:match("^(%d+)_.+%.html$") or entry:match("^(%d+)_.+%.epub$") then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
     menu_items.instapaper = {
         text = _("Instapaper"),
         sorting_hint = "main",
@@ -306,11 +299,9 @@ function Instapaper:addToMainMenu(menu_items)
                 separator = true,
             },
             {
-                text = _("Unread articles"),
+                text = _("Articles"),
                 callback = function()
-                    self:ensureOnlineAndLoggedIn(function()
-                        self:fetchAndShowArticles("unread")
-                    end)
+                    self:showUnreadFromCache()
                 end,
             },
             {
@@ -339,20 +330,6 @@ function Instapaper:addToMainMenu(menu_items)
                 end,
             },
             {
-                text = _("Bulk download..."),
-                callback = function()
-                    self:ensureOnlineAndLoggedIn(function()
-                        self:showBulkDownloadDialog()
-                    end)
-                end,
-            },
-            {
-                text = _("Open downloads folder"),
-                callback = function()
-                    self:openDownloadsFolder()
-                end,
-            },
-            {
                 text = _("Clear downloads cache"),
                 keep_menu_open = true,
                 callback = function()
@@ -360,7 +337,15 @@ function Instapaper:addToMainMenu(menu_items)
                 end,
             },
             {
-                text = _("Rename downloaded articles"),
+                text_func = function()
+                    local n = countLegacyFiles()
+                    return n > 0
+                        and T(_("Rename downloaded articles (%1)"), tostring(n))
+                        or  ""  -- empty text hides the entry
+                end,
+                enabled_func = function()
+                    return countLegacyFiles() > 0
+                end,
                 keep_menu_open = true,
                 callback = function()
                     self:confirmAndMigrateFilenames()
@@ -553,7 +538,7 @@ function Instapaper:showSettingsDialog()
                 .. "\n" .. _("Sort: ") .. sort_label
                 .. "\n" .. _("Output format: ") .. fmt_label
                 .. "\n" .. _("Include images (EPUB): ") .. img_label
-                .. "\n" .. _("After download: ") .. action_label
+                .. "\n" .. _("After tap-download: ") .. action_label
                 .. "\n" .. _("Archive finished on sync: ") .. sync_archive_label
                 .. "\n" .. _("Cache folder: ") .. cache_label,
             buttons = {
@@ -598,7 +583,7 @@ function Instapaper:showSettingsDialog()
                         end,
                     },
                     {
-                        text = _("< After download >"),
+                        text = _("< Tap-download >"),
                         callback = function()
                             if after_download_action == "none" then
                                 after_download_action = "archive"
@@ -877,12 +862,37 @@ function Instapaper:fetchAndShowArticles(folder_id, folder_name)
     self:showArticleMenu(bookmarks, folder_id, folder_name)
 end
 
+-- Local-first entry point for the Unread folder. Renders from the cached
+-- bookmark list (written at end of sync) without touching the network.
+-- Falls back to the network path when no cache exists yet (first run).
+function Instapaper:showUnreadFromCache()
+    local cached = self:loadBookmarkCache("unread")
+    if cached and #cached > 0 then
+        self:showArticleMenu(cached, "unread")
+        return
+    end
+    self:ensureOnlineAndLoggedIn(function()
+        self:fetchAndShowArticles("unread")
+    end)
+end
+
+-- Build a set of bookmark_ids whose article file currently exists on disk.
+-- Used by showArticleMenu to mark rows as "on device" vs "server only".
+function Instapaper:getDownloadedIdSet()
+    local set = {}
+    for _, item in ipairs(self:getLocalArticles()) do
+        set[item.id] = true
+    end
+    return set
+end
+
 function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
     local folder_names = {
         unread  = _("Unread"),
         starred = _("Starred"),
         archive = _("Archive"),
     }
+    local downloaded_ids = self:getDownloadedIdSet()
 
     -- Right-column annotation: saved date plus reading progress.
     -- Saved date format: "Apr 28" (current year) or "Apr 28 '25" (older).
@@ -927,13 +937,25 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
             title = "Untitled"
         end
 
+        local id_str = tostring(bm.bookmark_id)
+        local on_device = downloaded_ids[id_str] == true
+        -- Filled circle = downloaded (instant open).
+        -- Empty circle = server-only (needs download).
+        local prefix = on_device and "● " or "○ "
+
         local item = {
-            text = title,
+            text = prefix .. title,
             _bookmark = bm,
+            _on_device = on_device,
             callback = function()
-                NetworkMgr:runWhenOnline(function()
-                    self:downloadAndOpenArticle(bm)
-                end)
+                if on_device then
+                    -- Instant open path -- no network needed
+                    self:openLocalArticle(bm)
+                else
+                    NetworkMgr:runWhenOnline(function()
+                        self:downloadAndOpenArticle(bm)
+                    end)
+                end
             end,
             hold_callback = function()
                 self:showArticleActions(bm, menu, folder_id)
@@ -1211,6 +1233,31 @@ function Instapaper:downloadArticleOnly(bookmark)
     end
 end
 
+-- Open an already-downloaded article without any network round-trip.
+-- Used for "on-device" rows in the local-first article list.
+function Instapaper:openLocalArticle(bookmark)
+    -- Prefer the configured output_format's path; fall back to whichever is on disk
+    local html_path = self:buildFilepath(bookmark)
+    local epub_path
+    if InstapaperEpub_loaded then
+        -- noop placeholder; we lazy-require below
+    end
+    local target = html_path
+    if not lfs.attributes(target) then
+        local InstapaperEpub = require("instapaper_epub")
+        epub_path = InstapaperEpub.buildEpubPath(self:getDownloadDir(), bookmark)
+        if lfs.attributes(epub_path) then target = epub_path end
+    end
+    if not lfs.attributes(target) then
+        UIManager:show(InfoMessage:new{
+            text = _("Local file not found. Download it first."),
+        })
+        return
+    end
+    local ReaderUI = require("apps/reader/readerui")
+    ReaderUI:showReader(target)
+end
+
 function Instapaper:downloadAndOpenArticle(bookmark)
     UIManager:show(InfoMessage:new{
         text = _("Downloading article..."),
@@ -1335,16 +1382,6 @@ function Instapaper:_doClearDownloadsCache(dir)
     })
 end
 
-function Instapaper:openDownloadsFolder()
-    local dir = self:getDownloadDir()
-    local FileManager = require("apps/filemanager/filemanager")
-    if FileManager.instance then
-        FileManager.instance:reinit(dir)
-    else
-        FileManager:showFiles(dir)
-    end
-end
-
 --------------------------------------------------------------------
 -- Custom folders
 --------------------------------------------------------------------
@@ -1421,216 +1458,36 @@ function Instapaper:fetchAndShowUserFolders()
 end
 
 --------------------------------------------------------------------
--- Bulk download
+-- Bookmark cache (for local-first browsing)
+--
+-- After each sync we serialize the server's Unread bookmark list to
+-- {cache_dir}/.cache/bookmarks_unread.json. The article-list view reads
+-- from this file instead of hitting the API on every tap.
 --------------------------------------------------------------------
 
-function Instapaper:showBulkDownloadDialog()
-    -- Start with built-in folders; custom folders appended after fetch
-    local folder_choices = {
-        { text = _("Unread"),  value = "unread"  },
-        { text = _("Starred"), value = "starred" },
-        { text = _("Archive"), value = "archive" },
-    }
-
-    -- Fetch user folders and append
-    local user_folders = self:fetchUserFolders()
-    if user_folders then
-        for _, f in ipairs(user_folders) do
-            table.insert(folder_choices, f)
-        end
-    end
-
-    -- State for the dialog
-    local selected_folder_idx = 1
-    local days_limit = 0   -- 0 = no limit
-    local archive_after = self.settings:readSetting("bulk_archive_after") or false
-    local delete_after  = self.settings:readSetting("bulk_delete_after")  or false
-
-    local function folderLabel()
-        return folder_choices[selected_folder_idx].text
-    end
-
-    local function daysLabel()
-        if days_limit == 0 then
-            return _("All time")
-        else
-            return T(_("Last %1 days"), tostring(days_limit))
-        end
-    end
-
-    local bulk_dialog
-    local function rebuildDialog()
-        if bulk_dialog then
-            UIManager:close(bulk_dialog)
-        end
-        bulk_dialog = ButtonDialog:new{
-            title = _("Bulk download settings")
-                .. "\n" .. _("Folder: ") .. folderLabel()
-                .. "\n" .. _("Period: ") .. daysLabel()
-                .. "\n" .. _("Archive after download: ") .. (archive_after and _("Yes") or _("No"))
-                .. "\n" .. _("Delete after download: ")  .. (delete_after  and _("Yes") or _("No")),
-            buttons = {
-                {
-                    {
-                        text = _("< Folder >"),
-                        callback = function()
-                            selected_folder_idx = (selected_folder_idx % #folder_choices) + 1
-                            rebuildDialog()
-                        end,
-                    },
-                    {
-                        text = _("< Period >"),
-                        callback = function()
-                            UIManager:close(bulk_dialog)
-                            local spin = SpinWidget:new{
-                                title_text = _("Days limit (0 = all)"),
-                                value = days_limit,
-                                value_min = 0,
-                                value_max = 365,
-                                value_step = 1,
-                                ok_text = _("Set"),
-                                callback = function(spin_widget)
-                                    days_limit = spin_widget.value
-                                    rebuildDialog()
-                                end,
-                                cancel_callback = function()
-                                    rebuildDialog()
-                                end,
-                            }
-                            UIManager:show(spin)
-                        end,
-                    },
-                },
-                {
-                    {
-                        text = _("Archive after: ") .. (archive_after and _("ON") or _("OFF")),
-                        callback = function()
-                            archive_after = not archive_after
-                            if archive_after then delete_after = false end
-                            rebuildDialog()
-                        end,
-                    },
-                    {
-                        text = _("Delete after: ") .. (delete_after and _("ON") or _("OFF")),
-                        callback = function()
-                            delete_after = not delete_after
-                            if delete_after then archive_after = false end
-                            rebuildDialog()
-                        end,
-                    },
-                },
-                {
-                    {
-                        text = _("Start download"),
-                        callback = function()
-                            UIManager:close(bulk_dialog)
-                            -- Save preferences
-                            self.settings:saveSetting("bulk_archive_after", archive_after)
-                            self.settings:saveSetting("bulk_delete_after",  delete_after)
-                            self.settings:flush()
-                            local folder_val = folder_choices[selected_folder_idx].value
-                            self:runBulkDownload(folder_val, days_limit, archive_after, delete_after)
-                        end,
-                    },
-                    {
-                        text = _("Cancel"),
-                        callback = function()
-                            UIManager:close(bulk_dialog)
-                        end,
-                    },
-                },
-            },
-        }
-        UIManager:show(bulk_dialog)
-    end
-
-    rebuildDialog()
+function Instapaper:_bookmarkCachePath(folder_id)
+    return self:getDownloadDir() .. "/.cache/bookmarks_" .. (folder_id or "unread") .. ".json"
 end
 
-function Instapaper:runBulkDownload(folder_id, days_limit, archive_after, delete_after)
-    UIManager:show(InfoMessage:new{
-        text = _("Fetching article list..."),
-        timeout = 1,
-    })
+function Instapaper:saveBookmarkCache(folder_id, bookmarks)
+    local cache_dir = self:getDownloadDir() .. "/.cache"
+    lfs.mkdir(cache_dir)
+    local path = self:_bookmarkCachePath(folder_id)
+    local f = io.open(path, "w")
+    if not f then return end
+    f:write(JSON.encode(bookmarks))
+    f:close()
+end
 
-    local params = { limit = "500" }  -- bulk always fetches max
-    if folder_id then
-        params.folder_id = folder_id
-    end
-
-    local ok, body, code = self:apiRequest("/api/1/bookmarks/list", params)
-    if not ok then
-        UIManager:show(InfoMessage:new{
-            text = T(_("Failed to fetch articles: %1"), body or tostring(code)),
-        })
-        return
-    end
-
-    local parse_ok, data = pcall(JSON.decode, body)
-    if not parse_ok or type(data) ~= "table" then
-        UIManager:show(InfoMessage:new{
-            text = _("Failed to parse article list."),
-        })
-        return
-    end
-
-    local bookmarks = {}
-    for _, item in ipairs(data) do
-        if type(item) == "table" and item.type == "bookmark" then
-            -- Apply days filter (client-side)
-            local include = true
-            if days_limit and days_limit > 0 then
-                local cutoff = os.time() - (days_limit * 86400)
-                if not item.time or item.time < cutoff then
-                    include = false
-                end
-            end
-            if include then
-                table.insert(bookmarks, item)
-            end
-        end
-    end
-
-    if #bookmarks == 0 then
-        UIManager:show(InfoMessage:new{
-            text = _("No articles match the selected filters."),
-        })
-        return
-    end
-
-    -- Download sequentially, show progress
-    local downloaded = 0
-    local failed = 0
-    for _, bm in ipairs(bookmarks) do
-        local html, err = self:fetchArticleHtml(bm)
-        if html then
-            local saved = self:saveArticle(bm, html)
-            if saved then
-                downloaded = downloaded + 1
-                -- Archive or delete after successful download
-                if archive_after then
-                    self:apiRequest("/api/1/bookmarks/archive", {
-                        bookmark_id = tostring(bm.bookmark_id),
-                    })
-                elseif delete_after then
-                    self:apiRequest("/api/1/bookmarks/delete", {
-                        bookmark_id = tostring(bm.bookmark_id),
-                    })
-                end
-            else
-                failed = failed + 1
-            end
-        else
-            logger.warn("Instapaper bulk: failed to download", bm.bookmark_id, err)
-            failed = failed + 1
-        end
-    end
-
-    local msg = T(_("Bulk download complete.\nDownloaded: %1  Failed: %2"),
-        tostring(downloaded), tostring(failed))
-    UIManager:show(InfoMessage:new{
-        text = msg,
-    })
+function Instapaper:loadBookmarkCache(folder_id)
+    local path = self:_bookmarkCachePath(folder_id)
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local content = f:read("*all")
+    f:close()
+    local ok, data = pcall(JSON.decode, content)
+    if not ok or type(data) ~= "table" then return nil end
+    return data
 end
 
 --------------------------------------------------------------------
@@ -1758,58 +1615,68 @@ end
 --   3. Delete locals whose bookmark_id is no longer in Unread (orphans).
 --   4. Download server-side articles missing from disk.
 function Instapaper:syncToDevice()
-    UIManager:show(InfoMessage:new{
-        text = _("Syncing Instapaper..."),
-        timeout = 1,
-    })
+    local Trapper = require("ui/trapper")
+    Trapper:wrap(function()
+        Trapper:info(_("Syncing Instapaper..."))
 
-    -- Step 1
-    local archived = 0
-    if self.auto_archive_on_sync then
-        archived = self:archiveFinishedDownloads()
-    end
+        -- Step 1: archive finished + delete locally
+        local archived = 0
+        if self.auto_archive_on_sync then
+            Trapper:info(_("Archiving finished articles..."))
+            archived = self:archiveFinishedDownloads()
+        end
 
-    -- Step 2
-    local ok, body, code = self:apiRequest("/api/1/bookmarks/list", {
-        limit = "500",
-    })
-    if not ok then
-        UIManager:show(InfoMessage:new{
-            text = T(_("Sync failed: %1"), body or tostring(code)),
+        -- Step 2: fetch server's current Unread list
+        Trapper:info(_("Fetching unread list..."))
+        local ok, body, code = self:apiRequest("/api/1/bookmarks/list", {
+            limit = "500",
         })
-        return
-    end
-    local parse_ok, data = pcall(JSON.decode, body)
-    if not parse_ok or type(data) ~= "table" then
-        UIManager:show(InfoMessage:new{ text = _("Failed to parse article list.") })
-        return
-    end
-
-    local server_ids = {}
-    local server_bookmarks = {}
-    for _, item in ipairs(data) do
-        if type(item) == "table" and item.type == "bookmark" then
-            server_ids[tostring(item.bookmark_id)] = true
-            table.insert(server_bookmarks, item)
+        if not ok then
+            Trapper:info(T(_("Sync failed: %1"), body or tostring(code)))
+            return
         end
-    end
-
-    -- Step 3: orphan sweep
-    local removed = 0
-    local local_ids = {}
-    for _, item in ipairs(self:getLocalArticles()) do
-        local_ids[item.id] = true
-        if not server_ids[item.id] then
-            self:removeLocalArticle(item.path)
-            removed = removed + 1
+        local parse_ok, data = pcall(JSON.decode, body)
+        if not parse_ok or type(data) ~= "table" then
+            Trapper:info(_("Failed to parse article list."))
+            return
         end
-    end
 
-    -- Step 4: download what's missing
-    local downloaded, failed = 0, 0
-    for _, bm in ipairs(server_bookmarks) do
-        local id_str = tostring(bm.bookmark_id)
-        if not local_ids[id_str] then
+        local server_ids = {}
+        local server_bookmarks = {}
+        for _, item in ipairs(data) do
+            if type(item) == "table" and item.type == "bookmark" then
+                server_ids[tostring(item.bookmark_id)] = true
+                table.insert(server_bookmarks, item)
+            end
+        end
+
+        -- Persist cache so the article-list view can render offline
+        self:saveBookmarkCache("unread", server_bookmarks)
+
+        -- Step 3: orphan sweep
+        local removed = 0
+        local local_ids = {}
+        local locals = self:getLocalArticles()
+        for _, item in ipairs(locals) do
+            local_ids[item.id] = true
+            if not server_ids[item.id] then
+                self:removeLocalArticle(item.path)
+                removed = removed + 1
+            end
+        end
+
+        -- Step 4: download what's missing, with progress
+        local missing = {}
+        for _, bm in ipairs(server_bookmarks) do
+            if not local_ids[tostring(bm.bookmark_id)] then
+                table.insert(missing, bm)
+            end
+        end
+
+        local downloaded, failed = 0, 0
+        local total = #missing
+        for i, bm in ipairs(missing) do
+            Trapper:info(T(_("Downloading %1/%2..."), tostring(i), tostring(total)))
             local html = self:fetchArticleHtml(bm)
             if html then
                 if self:saveArticle(bm, html) then
@@ -1821,13 +1688,11 @@ function Instapaper:syncToDevice()
                 failed = failed + 1
             end
         end
-    end
 
-    UIManager:show(InfoMessage:new{
-        text = T(_("Sync complete.\nArchived: %1  Removed: %2\nDownloaded: %3  Failed: %4"),
+        Trapper:info(T(_("Sync complete.\nArchived: %1  Removed: %2\nDownloaded: %3  Failed: %4"),
             tostring(archived), tostring(removed),
-            tostring(downloaded), tostring(failed)),
-    })
+            tostring(downloaded), tostring(failed)))
+    end)
 end
 
 --------------------------------------------------------------------
