@@ -916,9 +916,11 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
     }
     local downloaded_ids = self:getDownloadedIdSet()
 
-    -- Right-column annotation: saved date plus reading progress.
-    -- Saved date format: "Apr 28" (current year) or "Apr 28 '25" (older).
-    -- Progress is appended only when > 0. Both, either, or neither may render.
+    -- Right-column annotation. Up to three pieces, joined with " · ":
+    --   saved date     "Apr 28" (current year) or "Apr 28 '25" (older)
+    --   reading time   "5m" or "1h23m" (computed from word_count at 200 wpm)
+    --   progress       "47%" (only when > 0)
+    -- Compact forms keep the column under ~15 chars to avoid title truncation.
     local function formatMandatory(bm)
         local parts = {}
         if bm.time and bm.time > 0 then
@@ -928,6 +930,16 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
                 parts[#parts + 1] = os.date("%b %-d", bm.time)
             else
                 parts[#parts + 1] = os.date("%b %-d '%y", bm.time)
+            end
+        end
+        if bm.word_count and bm.word_count > 0 then
+            local mins = math.ceil(bm.word_count / 200)
+            if mins < 60 then
+                parts[#parts + 1] = tostring(mins) .. "m"
+            else
+                local h, m = math.floor(mins / 60), mins % 60
+                parts[#parts + 1] = (m == 0) and (tostring(h) .. "h")
+                                              or (tostring(h) .. "h" .. tostring(m) .. "m")
             end
         end
         if bm.progress and bm.progress > 0 then
@@ -1168,6 +1180,18 @@ function Instapaper:injectTitleIfMissing(html, bookmark)
         result = inject .. html
     end
     return result
+end
+
+-- Quick-and-dirty word count of HTML content. Strips tags, decodes a
+-- handful of common entities, and counts whitespace-separated tokens.
+-- Good enough for "5 min" reading-time estimates at 200 wpm.
+function Instapaper:countWordsInHtml(html)
+    if type(html) ~= "string" or html == "" then return 0 end
+    local text = html:gsub("<[^>]+>", " ")
+    text = text:gsub("&nbsp;", " "):gsub("&[#%w]+;", " ")
+    local count = 0
+    for _ in text:gmatch("%S+") do count = count + 1 end
+    return count
 end
 
 function Instapaper:fetchArticleHtml(bookmark)
@@ -1746,8 +1770,18 @@ function Instapaper:syncToDevice()
             end
         end
 
-        -- Persist cache so the article-list view can render offline
-        self:saveBookmarkCache("unread", server_bookmarks)
+        -- Carry word counts forward from the previous cache (server response
+        -- doesn't include word_count; we accumulate it across syncs).
+        local prev_wc = {}
+        for _, bm in ipairs(self:loadBookmarkCache("unread") or {}) do
+            if bm.word_count and bm.bookmark_id then
+                prev_wc[tostring(bm.bookmark_id)] = bm.word_count
+            end
+        end
+        for _, bm in ipairs(server_bookmarks) do
+            local id = tostring(bm.bookmark_id)
+            if prev_wc[id] then bm.word_count = prev_wc[id] end
+        end
 
         -- Step 3: orphan sweep
         local removed = 0
@@ -1778,6 +1812,8 @@ function Instapaper:syncToDevice()
             local saved = html and self:saveArticle(bm, html)
             if saved then
                 downloaded = downloaded + 1
+                -- Capture word count while HTML is still in memory
+                bm.word_count = self:countWordsInHtml(html)
             else
                 failed = failed + 1
                 table.insert(failures, {
@@ -1786,6 +1822,25 @@ function Instapaper:syncToDevice()
                 })
             end
         end
+
+        -- Backfill word count for any on-disk article still missing it
+        -- (first run after upgrade, or articles downloaded before v1.8.0).
+        for _, bm in ipairs(server_bookmarks) do
+            if not bm.word_count then
+                local path = self:buildFilepath(bm)
+                if lfs.attributes(path) then
+                    local f = io.open(path, "r")
+                    if f then
+                        local html = f:read("*all")
+                        f:close()
+                        bm.word_count = self:countWordsInHtml(html)
+                    end
+                end
+            end
+        end
+
+        -- Now-final cache reflects all word counts (carried-forward + new + backfill)
+        self:saveBookmarkCache("unread", server_bookmarks)
 
         -- Persist failure list so user can review later
         self:saveFailureList(failures)
