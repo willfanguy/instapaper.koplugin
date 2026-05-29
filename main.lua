@@ -36,6 +36,15 @@ local function percent_encode(str)
     end))
 end
 
+-- RFC 3986 percent-decoding (inverse of percent_encode). Used on the
+-- form-urlencoded values in the xAuth access_token response.
+local function percent_decode(str)
+    if not str then return "" end
+    return (tostring(str):gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+    end))
+end
+
 local function generate_nonce()
     local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     local t = {}
@@ -180,7 +189,17 @@ function Instapaper:onInstapaperSync()
     return true
 end
 
+-- Open the article list straight from a gesture/profile, skipping the menu
+-- dig. Local-first: renders from the cached Unread list with no network,
+-- and only falls back online when there's no cache yet (first run).
+function Instapaper:onInstapaperShowArticles()
+    self:showUnreadFromCache()
+    return true
+end
+
 function Instapaper:onDispatcherRegisterActions()
+    Dispatcher:registerAction("instapaper_show_articles",
+        { category = "none", event = "InstapaperShowArticles", title = _("Instapaper articles"), general = true, })
     Dispatcher:registerAction("instapaper_sync",
         { category = "none", event = "InstapaperSync", title = _("Instapaper sync"), general = true, separator = true, })
 end
@@ -791,7 +810,7 @@ function Instapaper:xauthLogin(username, password)
     local prev_t, prev_s = self.oauth_token, self.oauth_token_secret
     self.oauth_token, self.oauth_token_secret = nil, nil
 
-    -- raw_response = true because xAuth returns qline, not JSON
+    -- raw_response = true because xAuth returns a form-urlencoded query line, not JSON
     local ok, body, code = self:apiRequest("/api/1/oauth/access_token", {
         x_auth_username = username,
         x_auth_password = password,
@@ -799,11 +818,13 @@ function Instapaper:xauthLogin(username, password)
     }, true)
 
     if ok then
-        local token  = body:match("oauth_token=([^&]+)")
-        local secret = body:match("oauth_token_secret=([^&]+)")
+        -- Stop at '&' or whitespace (so a trailing newline can't get baked into
+        -- the signing key) and percent-decode the form-urlencoded values.
+        local token  = body:match("oauth_token=([^&%s]+)")
+        local secret = body:match("oauth_token_secret=([^&%s]+)")
         if token and secret then
-            self.oauth_token        = token
-            self.oauth_token_secret = secret
+            self.oauth_token        = percent_decode(token)
+            self.oauth_token_secret = percent_decode(secret)
             self.username           = username
             self:saveSettings()
             UIManager:show(InfoMessage:new{
@@ -817,8 +838,32 @@ function Instapaper:xauthLogin(username, password)
     -- Restore previous tokens on failure
     self.oauth_token, self.oauth_token_secret = prev_t, prev_s
     UIManager:show(InfoMessage:new{
-        text = T(_("Login failed (HTTP %1)"), tostring(code)),
+        text = self:loginErrorMessage(ok, body, code),
     })
+end
+
+-- Turn an xAuth failure into a human-readable reason. Instapaper returns a
+-- JSON error array ([{type="error", message=...}]) on bad credentials; fall
+-- back to the HTTP status (or a network note) when there's no usable message.
+function Instapaper:loginErrorMessage(ok, body, code)
+    if body and body ~= "" then
+        local parse_ok, data = pcall(JSON.decode, body)
+        if parse_ok and type(data) == "table" then
+            for _, item in ipairs(data) do
+                if type(item) == "table" and item.type == "error" and item.message then
+                    return T(_("Login failed: %1"), item.message)
+                end
+            end
+        end
+    end
+    if ok then
+        -- HTTP 200 but no token in the body -- unexpected shape
+        return _("Login failed: unexpected response from Instapaper.")
+    end
+    if code == 0 then
+        return _("Login failed: network error. Check your connection.")
+    end
+    return T(_("Login failed (HTTP %1)"), tostring(code))
 end
 
 function Instapaper:logout()
@@ -879,6 +924,14 @@ function Instapaper:fetchAndShowArticles(folder_id, folder_name)
             text = _("No articles found."),
         })
         return
+    end
+
+    -- Prime the local-first cache on the first network fetch of Unread, so the
+    -- gesture/Articles entry is instant even before the user's first full sync.
+    -- Only reached when no cache exists yet (showUnreadFromCache falls back
+    -- here), so this never clobbers a richer, word-count-bearing cache.
+    if folder_id == "unread" or folder_id == nil then
+        self:saveBookmarkCache("unread", bookmarks)
     end
 
     self:showArticleMenu(bookmarks, folder_id, folder_name)
@@ -943,7 +996,7 @@ function Instapaper:showArticleMenu(bookmarks, folder_id, folder_name)
             end
         end
         if bm.progress and bm.progress > 0 then
-            parts[#parts + 1] = string.format("%d%%", bm.progress * 100)
+            parts[#parts + 1] = string.format("%d%%", math.floor(bm.progress * 100 + 0.5))
         end
         if #parts == 0 then return nil end
         return table.concat(parts, " · ")
@@ -1062,7 +1115,7 @@ function Instapaper:buildArticleMetaTitle(bookmark)
 
     -- Reading progress
     if bookmark.progress and bookmark.progress > 0 then
-        lines[#lines + 1] = _("Progress: ") .. string.format("%d%%", bookmark.progress * 100)
+        lines[#lines + 1] = _("Progress: ") .. string.format("%d%%", math.floor(bookmark.progress * 100 + 0.5))
     end
 
     -- URL (truncated)
@@ -1248,35 +1301,9 @@ function Instapaper:saveArticle(bookmark, html)
     end
 end
 
--- Download only (no open), keeps caller menu open
-function Instapaper:downloadArticleOnly(bookmark)
-    UIManager:show(InfoMessage:new{
-        text = _("Downloading article..."),
-        timeout = 1,
-    })
-
-    local html, err = self:fetchArticleHtml(bookmark)
-    if not html then
-        UIManager:show(InfoMessage:new{
-            text = T(_("Download failed (HTTP %1)"), tostring(err)),
-        })
-        return
-    end
-
-    local filepath = self:saveArticle(bookmark, html)
-    if not filepath then
-        UIManager:show(InfoMessage:new{
-            text = _("Could not save article file."),
-        })
-        return
-    end
-
-    local short_title = (bookmark.title or "article"):sub(1, 40)
-    UIManager:show(InfoMessage:new{
-        text = T(_("Saved: %1"), short_title),
-        timeout = 2,
-    })
-
+-- Perform the configured post-download action (archive / archive + mark-read).
+-- Shared by the tap-download and download-and-open paths so the two can't drift.
+function Instapaper:applyAfterDownloadAction(bookmark)
     if self.after_download_action == "archive" then
         self:apiRequest("/api/1/bookmarks/archive", {
             bookmark_id = tostring(bookmark.bookmark_id),
@@ -1293,15 +1320,61 @@ function Instapaper:downloadArticleOnly(bookmark)
     end
 end
 
+-- Fetch (with retry), save in the configured format, and record the word count
+-- back into the cache so the article list shows a reading-time estimate right
+-- away. Returns filepath, html on success; nil, nil, err on failure (err is
+-- "save_failed" when the download succeeded but the file couldn't be written).
+function Instapaper:fetchAndSaveArticle(bookmark)
+    local html, err = self:fetchArticleHtmlWithRetry(bookmark, 2)
+    if not html then
+        return nil, nil, err
+    end
+    local filepath = self:saveArticle(bookmark, html)
+    if not filepath then
+        return nil, nil, "save_failed"
+    end
+    self:updateCachedBookmark(bookmark.bookmark_id, {
+        word_count = self:countWordsInHtml(html),
+    })
+    return filepath, html
+end
+
+-- Build the user-facing failure message for a fetchAndSaveArticle error.
+function Instapaper:downloadErrorMessage(err)
+    if err == "save_failed" then
+        return _("Could not save article file.")
+    end
+    return T(_("Download failed (HTTP %1)"), tostring(err))
+end
+
+-- Download only (no open), keeps caller menu open
+function Instapaper:downloadArticleOnly(bookmark)
+    UIManager:show(InfoMessage:new{
+        text = _("Downloading article..."),
+        timeout = 1,
+    })
+
+    local filepath, _html, err = self:fetchAndSaveArticle(bookmark)
+    if not filepath then
+        UIManager:show(InfoMessage:new{ text = self:downloadErrorMessage(err) })
+        return
+    end
+
+    local short_title = (bookmark.title or "article"):sub(1, 40)
+    UIManager:show(InfoMessage:new{
+        text = T(_("Saved: %1"), short_title),
+        timeout = 2,
+    })
+
+    self:applyAfterDownloadAction(bookmark)
+end
+
 -- Open an already-downloaded article without any network round-trip.
 -- Used for "on-device" rows in the local-first article list.
 function Instapaper:openLocalArticle(bookmark)
     -- Prefer the configured output_format's path; fall back to whichever is on disk
     local html_path = self:buildFilepath(bookmark)
     local epub_path
-    if InstapaperEpub_loaded then
-        -- noop placeholder; we lazy-require below
-    end
     local target = html_path
     if not lfs.attributes(target) then
         local InstapaperEpub = require("instapaper_epub")
@@ -1324,36 +1397,13 @@ function Instapaper:downloadAndOpenArticle(bookmark)
         timeout = 1,
     })
 
-    local html, err = self:fetchArticleHtml(bookmark)
-    if not html then
-        UIManager:show(InfoMessage:new{
-            text = T(_("Download failed (HTTP %1)"), tostring(err)),
-        })
-        return
-    end
-
-    local filepath = self:saveArticle(bookmark, html)
+    local filepath, _html, err = self:fetchAndSaveArticle(bookmark)
     if not filepath then
-        UIManager:show(InfoMessage:new{
-            text = _("Could not save article file."),
-        })
+        UIManager:show(InfoMessage:new{ text = self:downloadErrorMessage(err) })
         return
     end
 
-    if self.after_download_action == "archive" then
-        self:apiRequest("/api/1/bookmarks/archive", {
-            bookmark_id = tostring(bookmark.bookmark_id),
-        })
-    elseif self.after_download_action == "read" then
-        self:apiRequest("/api/1/bookmarks/archive", {
-            bookmark_id = tostring(bookmark.bookmark_id),
-        })
-        self:apiRequest("/api/1/bookmarks/update_read_progress", {
-            bookmark_id = tostring(bookmark.bookmark_id),
-            progress = "1.0",
-            progress_timestamp = tostring(os.time()),
-        })
-    end
+    self:applyAfterDownloadAction(bookmark)
 
     -- Open in KOReader
     local ReaderUI = require("apps/reader/readerui")
@@ -1550,6 +1600,23 @@ function Instapaper:loadBookmarkCache(folder_id)
     return data
 end
 
+-- Merge fields into the cached Unread bookmark with this id, if present.
+-- Lets a tap/long-press download update derived data (e.g. word_count) so the
+-- article list shows it immediately instead of waiting for the next sync to
+-- backfill it. No-op when the article isn't in the cached Unread list.
+function Instapaper:updateCachedBookmark(bookmark_id, fields)
+    local cached = self:loadBookmarkCache("unread")
+    if not cached then return end
+    local id = tostring(bookmark_id)
+    for _, bm in ipairs(cached) do
+        if tostring(bm.bookmark_id) == id then
+            for k, v in pairs(fields) do bm[k] = v end
+            self:saveBookmarkCache("unread", cached)
+            return
+        end
+    end
+end
+
 -- Persist (or clear, when the list is empty) the set of articles that
 -- failed to download in the most recent sync. The "View last sync
 -- failures" menu entry reads this back.
@@ -1692,6 +1759,19 @@ function Instapaper:isDocumentFinished(filepath)
     return summary and summary.status == "complete"
 end
 
+-- Read KOReader's live reading progress (0..1) from a downloaded article's
+-- sidecar, or nil if unknown. Lets the article list show where you actually
+-- are rather than Instapaper's stale server-side progress value.
+function Instapaper:getLocalReadProgress(filepath)
+    local ok, DocSettings = pcall(require, "docsettings")
+    if not ok or not DocSettings then return nil end
+    local ok2, doc_settings = pcall(function() return DocSettings:open(filepath) end)
+    if not ok2 or not doc_settings then return nil end
+    local pct = doc_settings:readSetting("percent_finished")
+    if type(pct) == "number" then return pct end
+    return nil
+end
+
 -- Remove the article file plus its KOReader sidecar. Uses DocSettings:purge()
 -- so both legacy ("foo.sdr") and modern ("foo.html.sdr") naming conventions
 -- are handled, plus central-folder mode if that's ever configured.
@@ -1823,12 +1903,22 @@ function Instapaper:syncToDevice()
             end
         end
 
-        -- Backfill word count for any on-disk article still missing it
-        -- (first run after upgrade, or articles downloaded before v1.8.0).
+        -- Re-scan disk after downloads so the map includes just-fetched files.
+        -- Format-agnostic (.html or .epub), so it works whichever output the
+        -- user has chosen -- unlike buildFilepath, which always returns .html.
+        local path_by_id = {}
+        for _, item in ipairs(self:getLocalArticles()) do
+            path_by_id[item.id] = item.path
+        end
+
+        -- Backfill word count for any HTML article still missing one (e.g. files
+        -- downloaded before reading-time estimates existed). EPUB files are
+        -- zipped, so their word count comes from the download-time capture above
+        -- and the carry-forward cache, not from re-reading the file here.
         for _, bm in ipairs(server_bookmarks) do
             if not bm.word_count then
-                local path = self:buildFilepath(bm)
-                if lfs.attributes(path) then
+                local path = path_by_id[tostring(bm.bookmark_id)]
+                if path and path:match("%.html$") then
                     local f = io.open(path, "r")
                     if f then
                         local html = f:read("*all")
@@ -1839,7 +1929,19 @@ function Instapaper:syncToDevice()
             end
         end
 
+        -- Refresh reading progress from KOReader's own sidecars (option b): the
+        -- list shows where you actually are as of this sync, while staying
+        -- instant to open because the value is cached, not read per-row.
+        for _, bm in ipairs(server_bookmarks) do
+            local path = path_by_id[tostring(bm.bookmark_id)]
+            if path then
+                local pct = self:getLocalReadProgress(path)
+                if pct then bm.progress = pct end
+            end
+        end
+
         -- Now-final cache reflects all word counts (carried-forward + new + backfill)
+        -- and refreshed reading progress.
         self:saveBookmarkCache("unread", server_bookmarks)
 
         -- Persist failure list so user can review later

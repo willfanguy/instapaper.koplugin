@@ -1,5 +1,6 @@
 local Version = require("version")
 local http = require("socket.http")
+local https = require("ssl.https")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local ltn12 = require("ltn12")
@@ -46,8 +47,13 @@ end
 
 local function downloadImageToMemory(url)
     local sink = {}
+    -- Pick the transport by scheme: socket.http has no TLS, so https image
+    -- URLs (the overwhelming majority on modern sites) must go through
+    -- ssl.https or they silently fail and the image is dropped from the EPUB.
+    -- (Cross-scheme redirects, e.g. http->https, still can't be followed.)
+    local requester = url:match("^[Hh][Tt][Tt][Pp][Ss]:") and https or http
     socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
-    local ok, code, headers = http.request{
+    local ok, code, headers = requester.request{
         url     = url,
         method  = "GET",
         sink    = ltn12.sink.table(sink),
@@ -181,7 +187,8 @@ function InstapaperEpub.createEpub(bookmark, html, download_dir, include_images)
     local escaped_title = title:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
     local mtime = os.time()
 
-    -- Strip DOCTYPE, xml declarations, and HTML comments (newline-safe with [%s%S])
+    -- Strip DOCTYPE, xml declarations, and HTML comments. ([%s%S] is the
+    -- "any char" class; in Lua patterns '.' already matches newlines too.)
     html = html:gsub("<!%-%-%[%s%S]-%-%->", "")
     html = html:gsub("<!DOCTYPE[^>]*>", "")
     html = html:gsub("<%?xml[%s%S]-%?>", "")
@@ -199,7 +206,8 @@ function InstapaperEpub.createEpub(bookmark, html, download_dir, include_images)
         end
     end
 
-    -- Extract body content using find+sub (multiline-safe, Lua '.' doesn't match newlines)
+    -- Extract body content with find+sub: clearer than a capture pattern for
+    -- pulling the text between the <body> markers.
     local body_content
     local _, body_open_end  = html:find("<body[^>]*>")   -- end pos of opening <body...>
     local body_close_start  = html:find("</body>")        -- start pos of </body>
@@ -308,7 +316,18 @@ function InstapaperEpub.createEpub(bookmark, html, download_dir, include_images)
     epub:addFileFromMemory("OEBPS/content.opf", table.concat(opf_parts), mtime)
 
     -- OEBPS/stylesheet.css
-    epub:addFileFromMemory("OEBPS/stylesheet.css", "/* Instapaper */\n", mtime)
+    -- Keep this deliberately minimal so it doesn't fight KOReader's own
+    -- typography settings (font, margins, line spacing). Only constrain the
+    -- things that actually break reading: oversized images overflowing the
+    -- page, and wide code blocks running off the right edge.
+    epub:addFileFromMemory("OEBPS/stylesheet.css", [[
+/* Instapaper */
+img { max-width: 100%; height: auto; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+figure { margin: 1em 0; }
+figcaption { font-size: 0.85em; font-style: italic; }
+blockquote { margin: 1em 1.5em; }
+]], mtime)
 
     -- OEBPS/toc.ncx
     local toc_ncx = string.format([[

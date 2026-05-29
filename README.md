@@ -7,7 +7,8 @@ Download and read articles from your Instapaper account directly in KOReader.
 - **One-tap Sync** — full-mirror sync of your Unread folder with live progress (`Downloading 47/200...`): archives finished articles, removes locals that are no longer Unread, and downloads any new ones
 - **Local-first article browsing** — tap *Articles* to see your library instantly, no network needed. Each row shows ● (downloaded, instant open) or ○ (server-only, fetches on tap)
 - **Auto-archive finished articles** — if KOReader marks an article complete (end-of-book prompt or "Reading status → Finished"), the next sync archives it on Instapaper and deletes the local file
-- **Top-level menu placement** — Instapaper appears on KOReader's main menu (no longer buried under Tools); also bindable to a gesture via Dispatcher (`Instapaper sync`)
+- **Top-level menu placement** — Instapaper appears on KOReader's main menu (no longer buried under Tools)
+- **Gesture shortcuts** — bind a gesture (or Profile) to **`Instapaper articles`** to jump straight to your article list from inside any book, or **`Instapaper sync`** to sync, both via Dispatcher — no menu digging
 - **OAuth 1.0a authentication** using Instapaper's official Full API
 - Browse **Unread**, **Starred**, **Archived**, and **custom folders**
 - **Download and read** articles as HTML or EPUB in KOReader's built-in reader
@@ -21,7 +22,7 @@ Download and read articles from your Instapaper account directly in KOReader.
 - **Reading progress** display (percentage read)
 - **Configurable article list limit** — fetch up to 10, 25, 50, 100, 200, or 500 articles at once
 - **Configurable articles per page** — show 14/20/25/30/40 entries on each page of the article list (default 25)
-- **Right-column annotations** — each row shows up to three pieces, separated by `·`: saved date (`Apr 28`), reading time (`5m` or `1h23m`, computed at 200 wpm from local word counts), and reading progress (`47%`). Reading time appears once an article has been downloaded
+- **Right-column annotations** — each row shows up to three pieces, separated by `·`: saved date (`Apr 28`), reading time (`5m` or `1h23m`, computed at 200 wpm from local word counts), and reading progress (`47%`). Reading time appears as soon as an article is downloaded; reading progress reflects your actual position in KOReader as of the last sync
 - **Sort** — articles can be sorted by **Newest first**, **Oldest first**, or **Title A-Z** via Settings → Sort
 - **Title-first filenames** — saved as `Article Title_ip_{bookmark_id}.html` so the file manager shows titles, not numbers
 - **One-shot rename** — *Rename downloaded articles* migrates legacy `{id}_title.html` files to the new title-first format, preserving reading progress
